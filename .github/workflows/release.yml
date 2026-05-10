@@ -14,11 +14,11 @@ concurrency:
 
 jobs:
   release:
-    runs-on: windows-latest
+    runs-on: windows-2025
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -54,7 +54,7 @@ jobs:
 
       - name: Set up Node.js
         if: steps.existing_release.outputs.exists != 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -97,7 +97,45 @@ jobs:
             throw 'runtime-assets.zip was not downloaded.'
           }
 
-          Expand-Archive -Path $archivePath -DestinationPath . -Force
+          $extractPath = Join-Path $env:RUNNER_TEMP 'runtime-assets'
+          if (Test-Path $extractPath) {
+            Remove-Item $extractPath -Recurse -Force
+          }
+
+          Expand-Archive -Path $archivePath -DestinationPath $extractPath -Force
+
+          New-Item -ItemType Directory -Path 'public' -Force | Out-Null
+
+          $hashCandidates = @(
+            (Join-Path $extractPath 'public/card-hashes.json'),
+            (Join-Path $extractPath 'card-hashes.json')
+          )
+          $modelDirCandidates = @(
+            (Join-Path $extractPath 'public/models'),
+            (Join-Path $extractPath 'models')
+          )
+          $cardDirCandidates = @(
+            (Join-Path $extractPath 'public/cards'),
+            (Join-Path $extractPath 'cards')
+          )
+
+          $hashSource = $hashCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          $modelSource = $modelDirCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          $cardSource = $cardDirCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $hashSource) {
+            throw 'card-hashes.json was not found in runtime-assets.zip.'
+          }
+          if (-not $modelSource) {
+            throw 'models directory was not found in runtime-assets.zip.'
+          }
+          if (-not $cardSource) {
+            throw 'cards directory was not found in runtime-assets.zip.'
+          }
+
+          Copy-Item $hashSource 'public/card-hashes.json' -Force
+          Copy-Item $modelSource 'public/models' -Recurse -Force
+          Copy-Item $cardSource 'public/cards' -Recurse -Force
 
       - name: Build Windows installer
         if: steps.existing_release.outputs.exists != 'true'
