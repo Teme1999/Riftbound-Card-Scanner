@@ -1,388 +1,202 @@
-# RiftBound Scanner
+# Riftbound Scanner
 
-A web application for scanning and cataloging RiftBound TCG cards using Computer Vision.
+Riftbound Scanner is an independent, desktop-first card scanning and collection
+tool for Riftbound TCG. It uses local ONNX detector files, local card artwork
+fingerprints, browser storage, and optional Tauri desktop packaging.
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/nekoraru22)
+This fork is maintained by Teme1999. It is not affiliated with, endorsed by,
+sponsored by, or connected to Riot Games or the upstream project maintainer.
+Required legal notices are in [NOTICE.md](NOTICE.md).
 
-## Architecture Overview
+## Features
 
-```text
-┌──────────────────────────────────────────────────────────────────┐
-│                        cards_scraper.py                          │
-├──────────────────────────────────────────────────────────────────┤
-│  1. Fetch gallery HTML                                           │
-│  2. Extract card data from __NEXT_DATA__                         │
-│  3. Normalize and save to SQLite                                 │
-│  4. Download + optimize + rotate images (parallel WebP)          │
-│  5. Crop artwork → histogram eq. → 16×16 color grid features  ─┐ │
-└──────────────────────────────┬─────────────────────────────────│─┘
-                               │                                 │
-                               ▼                                 ▼
-┌────────────────────────────────────────┐  ┌────────────────────────┐
-│           data_creator.py              │  │    card-hashes.json    │
-├────────────────────────────────────────┤  └───────────┬────────────┘
-│  1. Load card images from SQLite       │              │
-│  2. Generate synthetic backgrounds     │              ▼
-│  3. Place cards with random transforms │  ┌────────────────────────┐
-│  4. Apply augmentation pipeline        │  │  Frontend Card Matcher │
-│  5. Export YOLO OBB dataset            │  │  (color grid cosine    │
-│                                        │  │   similarity)          │
-└──────────────────┬─────────────────────┘  └────────────────────────┘
-                   │
-                   ▼
-┌────────────────────────────────────────┐
-│              train.py                  │
-├────────────────────────────────────────┤
-│  1. Upload dataset to Modal            │
-│  2. Train YOLO11n-OBB on cloud GPU     │
-│  3. Export to TensorFlow.js + ONNX     │
-│  4. Quantize ONNX to int8              │
-│  5. Download models to public/models/  │
-└────────────────────────────────────────┘
-```
+- Camera scanning with manual and auto-scan workflows.
+- Image upload scanning for single cards or larger photos.
+- Local pending queue, collection management, and CSV export.
+- Local card matching from generated `card-hashes.json` fingerprints.
+- Optional price cache import from the community Riftbound prices CSV.
+- Windows desktop packaging through Tauri.
 
-## How Detection Works
+## Runtime Behavior
 
-The scanner uses a **dual-layer approach** to scan cards in real time:
+The scanner is local-first. Card detection, card matching, collection data, and
+price cache storage run on the user's device.
 
-| Layer | Model | Question it answers | Details |
-|-------|-------|---------------------|---------|
-| **Detection** | YOLO11n-OBB | *Where* is there a card? | Locates cards in the camera frame with oriented bounding boxes (handles any rotation). Single class (`card`), trained on synthetic data. |
-| **Identification** | Color grid fingerprint | *Which* card is it? | Crops the detected region to the artwork area, computes a 16×16 color grid with histogram equalization, and finds the best match via cosine similarity. |
+The app only performs network requests for explicit update actions:
 
-YOLO alone doesn't know which card it's looking at — it only finds rectangular card-shaped objects. The color grid matcher then takes each crop and identifies the specific card.
+- Price update fetches `cards.csv` from `cristian-bravo/riftbound-prices`.
+- Price update fetches current exchange rates from the European Central Bank.
+- Model/card asset generation scripts can fetch Riot card gallery data when run
+  manually from `model/`.
 
-```
-Camera Frame ──► YOLO detects ──► Crop card ──► Artwork crop ──► 16×16 color grid ──► Cosine similarity ──► Card identified
-                 card positions    from frame     (illustration     histogram eq.        vs all stored          (name, set, rarity)
-                                                   region only)      768 float vector     card vectors
-```
-
-## Card Identification Pipeline
-
-The scanner identifies cards using a **color grid fingerprint** with histogram equalization. The pipeline operates only on the **artwork region** of the card, excluding the shared frame, name bar, and text box that are identical across cards.
-
-### Artwork Crop
-
-Before any feature extraction, the card image is cropped to isolate the illustration:
-
-```
-Full Card Image                 Artwork Crop
-┌──────────────────┐           ┌─────────────────┐
-│    Card Name     │  ──5%──►  │                 │
-├──────────────────┤           │   Illustration  │
-│                  │           │     Region      │
-│   Illustration   │           │                 │
-│                  │           │   (where cards  │
-├──────────────────┤  ──55%──► │    actually     │
-│   Card Text      │           │    differ)      │
-│   Stats / Energy │           └─────────────────┘
-└──────────────────┘             5%-95% width
-```
-
-This removes ~60% of the card area that is shared across all cards (frame borders, name bar, text box, stats), dramatically improving discrimination between visually similar cards.
-
-### Color Grid Matching
-
-Each card's artwork is converted into a compact numerical fingerprint:
+## Repository Layout
 
 ```text
-Artwork Crop              Histogram Eq.           16×16 Color Grid         Feature Vector
-┌────────────────┐       ┌────────────────┐      ┌─┬─┬─┬─┬─┬─┬─┬─┐
-│                │       │                │      │ │ │ │ │ │ │ │ │    [0.12, 0.34, 0.56,  ← R,G,B cell 1
-│  Illustration  │ ────► │  Normalized    │ ───► ├─┼─┼─┼─┼─┼─┼─┼─┤     0.23, 0.45, 0.67,  ← R,G,B cell 2
-│                │  eq.  │  Brightness    │      ├─┼─┼─┼─┼─┼─┼─┼─┤     ...
-│                │       │                │      │ │ │ │ │ │ │ │ │     0.89, 0.12, 0.34]  ← R,G,B cell 256
-└────────────────┘       └────────────────┘      └─┴─┴─┴─┴─┴─┴─┴─┘
-                                                  256 cells             768 values (256 × 3 RGB)
+riftbound-scanner/
+|-- src/                 # React UI, scanner hooks, matcher, runtime helpers
+|-- public/              # App images plus ignored generated runtime assets
+|-- model/               # Scraper, synthetic data generator, training scripts
+|-- scripts/             # Build and release checks
+`-- src-tauri/           # Tauri desktop shell
 ```
 
-1. **Histogram equalization**: Per-channel brightness normalization so dark photos match well-lit references
-2. **Resize**: Equalized artwork is resized to 16×16 pixels
-3. **Color extraction**: Each pixel's RGB values are normalized to 0-1 range
-4. **Cosine similarity**: Query vector is compared against all stored card vectors
-5. **Best match wins**: The card with the highest similarity is selected
+## Prerequisites
 
-### Full-Resolution Cropping
+- Node.js 18 or newer.
+- npm.
+- Rust 1.77 or newer for Tauri builds.
+- Python 3.10+ for card asset generation and detector retraining.
+- Optional: CUDA-capable GPU for faster local training.
 
-When uploading a multi-card image, the app resizes it to 2048px for YOLO detection (which processes at 640×640 anyway), but crops each detected card from the **original full-resolution image**. This ensures each card has maximum pixel detail for the color grid, even when many cards share a single photo.
+## Install
 
-### Orientation Handling
-
-Cards can be scanned in any rotation. The matcher tests both orientations:
-
-```text
-┌─────────┐      ┌───────────────┐
-│         │      │               │
-│  Card   │  vs  │     Card      │  (rotated 90°)
-│         │      │               │
-└─────────┘      └───────────────┘
-   Normal           Landscape
-
-Best similarity from both is used
+```bash
+npm install
+cd model
+python -m pip install -r requirements.txt
 ```
 
-## Running the Scraper
+The Python environment is only needed for scraping, dataset generation, and
+training. The app itself is built with Node and Rust.
+
+## Generated Runtime Assets
+
+Production builds require generated runtime assets, but those assets are not
+tracked in git:
+
+- `public/card-hashes.json`
+- `public/cards/*.webp`
+- `public/models/yolo11n-obb-riftbound.onnx`
+- `public/models/yolo11n-obb-riftbound-q8.onnx`
+
+The build preflight checks these files:
+
+```bash
+npm run check:assets
+```
+
+If the check fails, regenerate or restore the generated assets before building.
+
+## Card and Model Workflow
+
+Generate card metadata, card images, and matcher fingerprints:
 
 ```bash
 cd model
-python cards_scraper.py              # Full pipeline (fetch + download + hashes)
-python cards_scraper.py --only-hashes # Regenerate hashes only (skip fetch/download)
+python cards_scraper.py
 ```
 
-The `--only-hashes` flag is useful after tweaking feature extraction parameters — it skips the gallery fetch and image download, and only regenerates `card-hashes.json` from existing images.
-
-### Pipeline Output
-
-```text
-Downloading gallery...
-Cards found: 664
-Cards in database: 664
-Downloading and optimizing: 100%|██████████| 664/664
-Download complete. Total: 664, Failed: 0
-Generating hashes: 100%|██████████| 664/664
-Hashes generated: 664 cards (0 skipped)
-Scraping complete!
-```
-
-### Generated Files
-
-| File | Description |
-|------|-------------|
-| `model/riftbound.db` | SQLite database with card metadata |
-| `public/cards/*.webp` | Optimized card images (WebP format) |
-| `public/card-hashes.json` | Color grid features (768 floats) per card |
-
-## Synthetic Dataset Generation
-
-`data_creator.py` generates a synthetic YOLO OBB training dataset by compositing card images onto randomized backgrounds with heavy augmentation. The goal is to train a model that detects cards in real-world camera frames.
-
-### Running the Generator
+Generate the synthetic detection dataset:
 
 ```bash
-cd model
 python data_creator.py
 ```
 
-Generation is parallelized across all CPU cores using `ProcessPoolExecutor`.
-
-### Augmentation Pipeline
-
-Each training image goes through the following pipeline:
-
-```
-Background Generation          Card Placement              Global Augmentations
-┌───────────────────┐        ┌──────────────────┐        ┌────────────────────┐
-│ - Solid color     │        │ - Random scale   │        │ - Brightness       │
-│ - Gradient        │  ───►  │ - Random rotation│  ───►  │ - Contrast         │
-│ - Perlin noise    │        │ - Perspective    │        │ - Saturation       │
-│ - Blurred noise   │        │ - Horizontal flip│        │ - Hue shift        │
-│ - Two-tone split  │        │ - Shadow casting │        │ - Color jitter     │
-│ - Real texture    │        │ - Overlap avoid  │        │ - Gaussian noise   │
-│ + Lighting grad.  │        │ - 1-5 cards      │        │ - Motion blur      │
-│ + Distractors     │        └──────────────────┘        │ - JPEG artifacts   │
-└───────────────────┘                                    │ - Vignette         │
-                                                         │ - Cutout           │
-                                                         └────────────────────┘
-```
-
-Additionally, ~25% of training images use **mosaic augmentation** (YOLOv4+ style), which splits the image into 4 quadrants with independent scenes.
-
-### Optional Assets
-
-Place these in the `model/` directory before running the generator:
-
-| Directory | Contents | Effect |
-| --- | --- | --- |
-| `textures/` | JPG/PNG photos of real surfaces (desks, mats, tables) | Used as backgrounds 40% of the time |
-| `distractors/` | PNG objects with alpha (dice, tokens, sleeves) | Placed randomly to teach the model to ignore non-card objects |
-
-### Configuration
-
-Key settings at the top of `data_creator.py`:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `IMAGES_PER_CARD` | 150 | Synthetic images generated per card |
-| `OUTPUT_SIZE` | 640 | Image dimensions (640x640) |
-| `MAX_CARDS_PER_IMAGE` | 5 | Maximum cards per scene |
-| `TRAIN_RATIO` | 0.85 | Train/val split ratio |
-| `CARD_SCALE_MIN/MAX` | 0.12 / 0.60 | Card size range relative to image |
-| `ROTATION_RANGE` | -75 to 75 | Rotation angle range in degrees |
-| `MOSAIC_PROB` | 0.25 | Probability of mosaic augmentation |
-
-### Generated Dataset Structure
-
-```
-model/dataset/
-├── data.yaml
-├── train/
-│   ├── images/
-│   │   └── synth_000000.jpg, synth_000005.jpg, ...
-│   └── labels/
-│       └── synth_000000.txt, synth_000005.txt, ...
-└── val/
-    ├── images/
-    └── labels/
-```
-
-| File/Folder | Description |
-| --- | --- |
-| `data.yaml` | YOLO config file. Points to train/val paths, defines class count (`nc: 1`) and class names (`['card']`). Rewritten by `train.py` with remote paths during cloud training. |
-| `train/` | 85% of the dataset. Used by YOLO to learn during training. |
-| `val/` | 15% of the dataset. Used by YOLO during training to measure progress and pick the best checkpoint. |
-| `images/` | Synthetic 640x640 JPG images generated by `data_creator.py`. Each contains 1-9 cards on randomized backgrounds. |
-| `labels/` | One `.txt` per image (same name). Each line is one card detection in YOLO OBB format. |
-
-The numbers in the filenames (`synth_000000`, `synth_000005`, etc.) are sequential IDs assigned during generation. They're not consecutive within a split because images are randomly shuffled between train/val — e.g. `synth_000001` might be in val while `synth_000000` and `synth_000002` are in train.
-
-### Label Format (YOLO OBB)
-
-Labels are generated automatically by `data_creator.py` alongside each image. Since the cards are placed synthetically, the script knows the exact position, rotation, and scale of every card it composites — so it writes the corresponding label file with the precise corner coordinates. No manual annotation is needed.
-
-Each line in a label file describes one card with its 4 rotated corner coordinates:
-
-```
-class x1 y1 x2 y2 x3 y3 x4 y4
-```
-
-Example: `0 0.288 0.399 0.508 0.138 0.935 0.434 0.705 0.721`
-
-| Field | Meaning |
-| --- | --- |
-| `0` | Class ID (always `0` = card, since there's only one class) |
-| `x1 y1` ... `x4 y4` | The 4 corners of the oriented bounding box, normalized to 0-1 relative to image dimensions. These form a rotated rectangle around the card. |
-
-## Cloud Training
-
-`train.py` handles training on [Modal](https://modal.com/) cloud GPUs:
+Train and publish ONNX detector exports:
 
 ```bash
-modal run train.py                  # Upload dataset + train
-modal run train.py --skip-upload    # Train only (dataset already uploaded)
-modal run train.py --export-only    # Export and download (already trained)
+python train.py --preset accuracy --device auto
 ```
 
-Trains a YOLO11n-OBB model on an A10G GPU, exports to both TensorFlow.js and ONNX formats, automatically quantizes the ONNX model to int8 for optimal web performance, and copies all model files to `public/models/` for the web app.
-
-Use `--detach` to run training in the background (you can close your terminal or shut down your PC):
+Export again from an existing local checkpoint:
 
 ```bash
-modal run --detach train.py          # Launch and disconnect
-modal run train.py --export-only     # Download results later
+python train.py --export-only
 ```
 
-### Known Issues and Fixes
+## Development
 
-**Poor detection on dark/black backgrounds:**
-The model struggled to detect cards on dark surfaces because the card borders are black and blended into the background. The synthetic dataset generator (`data_creator.py`) was only creating backgrounds with colors in the 20-240 range, rarely producing truly dark scenes.
+Run the browser build:
 
-**Solution implemented:**
-1. **Dataset augmentation** (`data_creator.py`):
-   - Added 40% probability of dark backgrounds (0-50 color range) to train on black-on-black scenarios
-   - Added 15% probability of grid layout generation (`GRID_PROB = 0.15`) where cards are arranged in organized 2x2, 2x3, or 3x3 grids, simulating how users typically scan multiple cards at once
-2. **Training parameters** (`train.py`):
-   - Increased brightness augmentation: `hsv_v=0.6` (from default 0.4)
-   - Added mixup augmentation: `mixup=0.2` for better generalization
-   - Expanded rotation range: `degrees=15` (from default 0)
-
-These changes significantly improved detection accuracy on dark surfaces and organized card layouts.
-
-## Model Formats & Optimization
-
-The training pipeline (`train.py`) automatically generates three optimized model formats:
-
-| Format | Size | Speed | Use Case |
-|--------|------|-------|----------|
-| **TensorFlow.js** | ~6 MB | Baseline | Backward compatibility |
-| **ONNX (float32)** | ~5.5 MB | 1.5-2x faster | Modern browsers with ONNX Runtime |
-| **ONNX (int8)** | ~1.5 MB | 2-4x faster | Best performance, mobile-friendly |
-
-### Automatic Quantization
-
-After training completes, the pipeline automatically:
-
-1. **Exports to ONNX**: Converts the trained PyTorch model to ONNX format (float32)
-2. **Quantizes to int8**: Applies dynamic quantization using ONNX Runtime
-3. **Deploys**: Copies all model formats to `public/models/` for the web app
-
-```
-Training ──► Export ONNX ──► Quantize int8 ──► Deploy to public/
-best.pt      best.onnx       best_quantized     yolo11n-obb-riftbound-q8.onnx
- 6 MB         5.5 MB          1.4 MB            (75% size reduction)
+```bash
+npm run dev
 ```
 
-No additional steps required — all three formats are ready for use after `modal run train.py`.
+Run the desktop shell:
 
-### Quantization Benefits
-
-| Metric | Float32 | Int8 Quantized | Improvement |
-|--------|---------|----------------|-------------|
-| **Model Size** | ~6 MB | ~1.5 MB | 75% smaller |
-| **Inference Speed** | ~60-80ms/frame | ~30-50ms/frame | 2-4x faster |
-| **Memory Usage** | ~200 MB | ~100 MB | 50% less |
-| **Accuracy Loss** | - | <1% mAP | Negligible |
-
-### Using Models in the Web App
-
-The web app supports all three formats via ONNX Runtime Web (primary) and TensorFlow.js (fallback):
-
-**Settings UI**: Users can choose between:
-- **Normal (Float32)**: Best accuracy, ~6 MB
-- **Fast (Int8 Quantized)**: 2-4x faster, ~1.5 MB, <1% accuracy loss
-
-The model preference is saved to localStorage and persists across sessions. The app automatically loads the selected model on startup.
-
-### Technical Details
-
-**ONNX Runtime Web vs TensorFlow.js:**
-- ONNX Runtime Web is 1.5-3x faster for inference
-- Native int8 quantization support (TF.js only supports float32)
-- Smaller runtime size (~2.5 MB vs ~4-5 MB)
-- Direct export path from Ultralytics YOLO
-
-The detector uses ONNX as the primary format and falls back to TensorFlow.js for backward compatibility with older deployed models.
-
-## Model & Dataset
-
-| Resource | URL |
-|----------|-----|
-| YOLO11n-OBB Model | <https://platform.ultralytics.com/nekoraru22/yolo11n-obb-riftbound> |
-| Training Dataset | <https://platform.ultralytics.com/nekoraru22/datasets/dataset-obb-riftbound> |
-
-## Project Structure
-
-```text
-riftbound-scanner-src/
-├── model/
-│   ├── cards_scraper.py    # Scraper + hash generator (artwork crop + histogram eq.)
-│   ├── data_creator.py     # Synthetic dataset generator
-│   ├── train.py            # Cloud training on Modal
-│   ├── riftbound.db        # SQLite database
-│   ├── dataset/            # Generated YOLO OBB dataset
-│   ├── textures/           # (optional) Real background images
-│   └── distractors/        # (optional) Non-card PNG objects
-├── public/
-│   ├── cards/              # Optimized card images (WebP)
-│   ├── card-hashes.json    # Color grid feature hashes (768 floats per card)
-│   └── models/             # YOLO models (TF.js, ONNX, ONNX-int8)
-└── src/
-    └── lib/
-        ├── cardMatcher.js  # Color grid matching (cosine similarity)
-        └── yoloDetector.js # YOLO11n-OBB inference (ONNX / TF.js)
+```bash
+npm run desktop:dev
 ```
 
-## Fun Fact: Photoshopped Card Images
+Run release prechecks:
 
-The card identification system relies on a 16x16 pixel color grid extracted from the artwork region — not text recognition or detailed features. This means Photoshop-modified card images (e.g., custom cards, artistic alters, or humorous edits) could also be recognized by the system, as long as the artwork's overall color distribution remains close enough to the original card. The more the illustration is altered, the lower the similarity will be, making it more likely to go unrecognized or be confused with a different card.
+```bash
+npm run check
+npm audit --omit=dev --audit-level=moderate
+```
 
-## Example with picture
-<img width="2518" height="1288" alt="Sin título-1" src="https://github.com/user-attachments/assets/941b189b-494d-4756-baf0-63f694dd50cc" />
+Build the frontend:
 
-## TODO
-- [ ] Create an improved version of YOLO (and dataset)
-  - Fails when cards are very close to the camera, not enough background visible
-  - Fails when cards are on a big grid layout
-  - Fails when cards are in sleeves (reflections, altered borders)
-- Search bar in Collection
-- Maybe cropping cards is not the best idea, i can try cropping only black borders
+```bash
+npm run build
+```
+
+Build the Windows desktop installer:
+
+```bash
+npm run desktop:build
+```
+
+## Automatic Releases
+
+The repository now includes a GitHub Actions workflow at
+`.github/workflows/release.yml`.
+
+When a commit lands on `main`, the workflow:
+
+- reads the app version from `package.json`
+- verifies `src-tauri/tauri.conf.json` uses the same version
+- skips the run if release tag `v<version>` already exists
+- builds the Windows MSI
+- creates a GitHub Release tagged `v<version>` and uploads the MSI
+
+### One-time runtime asset bootstrap
+
+The release build still needs the ignored runtime assets:
+
+- `public/card-hashes.json`
+- `public/cards/*.webp`
+- `public/models/yolo11n-obb-riftbound.onnx`
+- `public/models/yolo11n-obb-riftbound-q8.onnx`
+
+GitHub-hosted runners do not get those files from git, so the workflow looks
+for a GitHub Release tagged `runtime-assets` and downloads an asset named
+`runtime-assets.zip` when the files are missing.
+
+Create that release once from a machine that already has the generated assets:
+
+```powershell
+Compress-Archive -Path public/card-hashes.json, public/cards, public/models -DestinationPath runtime-assets.zip -Force
+```
+
+Then create a GitHub Release with:
+
+- tag: `runtime-assets`
+- asset: `runtime-assets.zip`
+
+After that, the normal release flow is:
+
+1. Bump the version in `package.json`.
+2. Bump the same version in `src-tauri/tauri.conf.json`.
+3. Commit and push to `main`.
+4. Wait for the `Release` workflow to finish.
+5. Download the generated MSI from the GitHub Release page.
+
+## Production Notes
+
+- `npm run build` and `npm run desktop:build` fail early if runtime assets are
+  missing.
+- The desktop shell disables the global Tauri object and uses explicit Tauri v2
+  API imports.
+- The Tauri CSP allows local app assets plus the two explicit price update
+  endpoints.
+- The in-app retraining placeholder has been removed. Run the model scripts
+  directly, then rebuild/reload the app.
+- `src-tauri/target/`, `dist/`, `public/cards/`, `public/models/`, and
+  `public/card-hashes.json` are generated outputs.
+
+## License
+
+This fork is distributed under a source-available non-commercial license. See
+[LICENSE](LICENSE). Upstream MIT and third-party notices are preserved in
+[NOTICE.md](NOTICE.md).

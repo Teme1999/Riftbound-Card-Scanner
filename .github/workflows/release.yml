@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release version
+        id: version
+        shell: pwsh
+        run: |
+          $version = node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8')); const tauri = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8')); if (pkg.version !== tauri.version) { console.error('package.json and src-tauri/tauri.conf.json versions do not match.'); process.exit(1); } process.stdout.write(pkg.version);"
+          if (-not $version) {
+            throw 'Failed to resolve release version.'
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+
+      - name: Skip if release already exists
+        id: existing_release
+        shell: pwsh
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+          $match = git ls-remote --tags origin "refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to query remote tags.'
+          }
+          if ([string]::IsNullOrWhiteSpace($match)) {
+            "exists=false" >> $env:GITHUB_OUTPUT
+            Write-Host "No existing release tag found for $tag."
+          } else {
+            "exists=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Release tag $tag already exists. Skipping release build."
+          }
+
+      - name: Set up Node.js
+        if: steps.existing_release.outputs.exists != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        if: steps.existing_release.outputs.exists != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install WiX Toolset
+        if: steps.existing_release.outputs.exists != 'true'
+        shell: pwsh
+        run: choco install wixtoolset --yes --no-progress
+
+      - name: Install frontend dependencies
+        if: steps.existing_release.outputs.exists != 'true'
+        shell: pwsh
+        run: npm ci
+
+      - name: Restore runtime assets
+        if: steps.existing_release.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $hasHashes = Test-Path 'public/card-hashes.json'
+          $hasModel = Test-Path 'public/models/yolo11n-obb-riftbound.onnx'
+          $hasQuantizedModel = Test-Path 'public/models/yolo11n-obb-riftbound-q8.onnx'
+          $cardImage = Get-ChildItem 'public/cards' -File -Filter *.webp -ErrorAction SilentlyContinue | Select-Object -First 1
+
+          if ($hasHashes -and $hasModel -and $hasQuantizedModel -and $cardImage) {
+            Write-Host 'Runtime assets are already present in the checkout.'
+            exit 0
+          }
+
+          Write-Host 'Runtime assets are missing. Downloading runtime-assets.zip from the runtime-assets GitHub release.'
+          gh release download runtime-assets --pattern runtime-assets.zip --dir "$env:RUNNER_TEMP" --repo "${{ github.repository }}"
+
+          $archivePath = Join-Path $env:RUNNER_TEMP 'runtime-assets.zip'
+          if (-not (Test-Path $archivePath)) {
+            throw 'runtime-assets.zip was not downloaded.'
+          }
+
+          Expand-Archive -Path $archivePath -DestinationPath . -Force
+
+      - name: Build Windows installer
+        if: steps.existing_release.outputs.exists != 'true'
+        shell: pwsh
+        run: npm run desktop:build
+
+      - name: Resolve installer path
+        if: steps.existing_release.outputs.exists != 'true'
+        id: installer
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem 'src-tauri/target/release/bundle/msi' -File -Filter *.msi |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $msi) {
+            throw 'MSI bundle was not produced.'
+          }
+          "path=$($msi.FullName)" >> $env:GITHUB_OUTPUT
+          "name=$($msi.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload installer artifact
+        if: steps.existing_release.outputs.exists != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.installer.outputs.name }}
+          path: ${{ steps.installer.outputs.path }}
+
+      - name: Create GitHub release
+        if: steps.existing_release.outputs.exists != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: ${{ steps.installer.outputs.path }}
