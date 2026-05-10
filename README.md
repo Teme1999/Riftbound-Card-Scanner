@@ -144,11 +144,13 @@ The repository now includes a GitHub Actions workflow at
 
 When a commit lands on `main`, the workflow:
 
-- reads the app version from `package.json`
-- verifies `src-tauri/tauri.conf.json` uses the same version
-- skips the run if release tag `v<version>` already exists
+- reads the internal semver from `package.json`
+- reads the human release label from `package.json.releaseVersion`
+- verifies `src-tauri/tauri.conf.json` uses the same internal semver
+- skips the run if release tag `v<releaseVersion>` already exists
 - builds the Windows MSI
-- creates a GitHub Release tagged `v<version>` and uploads the MSI
+- renames the uploaded MSI to use the `releaseVersion` label
+- creates a GitHub Release tagged `v<releaseVersion>` and uploads the MSI
 
 ### One-time runtime asset bootstrap
 
@@ -176,11 +178,22 @@ Then create a GitHub Release with:
 
 After that, the normal release flow is:
 
-1. Bump the version in `package.json`.
-2. Bump the same version in `src-tauri/tauri.conf.json`.
-3. Commit and push to `main`.
-4. Wait for the `Release` workflow to finish.
-5. Download the generated MSI from the GitHub Release page.
+1. Set `package.json.version` to semver, for example `26.5.10-1`.
+2. Set `package.json.releaseVersion` to the GitHub release label, for example `2026.05.10.1`.
+3. Set `src-tauri/tauri.conf.json.version` to the same semver from step 1.
+4. Commit and push to `main`.
+5. Wait for the `Release` workflow to finish.
+6. Download the generated MSI from the GitHub Release page.
+
+The intended release numbering scheme is:
+
+- first release on a date: `YYYY.MM.DD.1`
+- second release on the same date: `YYYY.MM.DD.2`
+
+The Tauri, npm, and Windows MSI build still use a constrained semver internally, so those same examples map to:
+
+- `YY.M.D-1`
+- `YY.M.D-2`
 
 ## Production Notes
 

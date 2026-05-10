@@ -26,12 +26,14 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $version = node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8')); const tauri = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8')); if (pkg.version !== tauri.version) { console.error('package.json and src-tauri/tauri.conf.json versions do not match.'); process.exit(1); } process.stdout.write(pkg.version);"
-          if (-not $version) {
+          $versionData = node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8')); const tauri = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8')); if (pkg.version !== tauri.version) { console.error('package.json and src-tauri/tauri.conf.json versions do not match.'); process.exit(1); } const releaseVersion = pkg.releaseVersion || pkg.version; process.stdout.write(JSON.stringify({ version: pkg.version, releaseVersion }));"
+          if (-not $versionData) {
             throw 'Failed to resolve release version.'
           }
-          "version=$version" >> $env:GITHUB_OUTPUT
-          "tag=v$version" >> $env:GITHUB_OUTPUT
+          $versionJson = $versionData | ConvertFrom-Json
+          "version=$($versionJson.version)" >> $env:GITHUB_OUTPUT
+          "release_version=$($versionJson.releaseVersion)" >> $env:GITHUB_OUTPUT
+          "tag=v$($versionJson.releaseVersion)" >> $env:GITHUB_OUTPUT
 
       - name: Skip if release already exists
         id: existing_release
@@ -113,8 +115,11 @@ jobs:
           if (-not $msi) {
             throw 'MSI bundle was not produced.'
           }
-          "path=$($msi.FullName)" >> $env:GITHUB_OUTPUT
-          "name=$($msi.Name)" >> $env:GITHUB_OUTPUT
+          $releaseFileName = "Riftbound Scanner_${{ steps.version.outputs.release_version }}_x64_en-US.msi"
+          $releaseFilePath = Join-Path $msi.DirectoryName $releaseFileName
+          Copy-Item $msi.FullName $releaseFilePath -Force
+          "path=$releaseFilePath" >> $env:GITHUB_OUTPUT
+          "name=$releaseFileName" >> $env:GITHUB_OUTPUT
 
       - name: Upload installer artifact
         if: steps.existing_release.outputs.exists != 'true'
@@ -128,6 +133,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.release_version }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: ${{ steps.installer.outputs.path }}
