@@ -1,5 +1,5 @@
 /**
- * IndexedDB Storage Layer for RiftBound Scanner
+ * IndexedDB Storage Layer for Riftbound Scanner
  *
  * Stores:
  *   - Reference card hashes (for pHash matching)
@@ -8,12 +8,15 @@
  */
 
 const DB_NAME = 'riftbound-scanner';
-const DB_VERSION = 1;
+const DB_VERSION = 4;
 
 const STORES = {
   CARDS: 'cards',           // Card metadata
   HASHES: 'hashes',         // pHash reference hashes
   SCAN_HISTORY: 'scans',    // Scan sessions
+  MATCHER_DB: 'matcher_db',  // Imported card-hashes.json payload
+  PRICES: 'prices',          // Cached price snapshot records
+  PRICE_SYNC_META: 'price_sync_meta', // Latest price import metadata
 };
 
 let dbInstance = null;
@@ -53,6 +56,23 @@ function openDB() {
         });
         scanStore.createIndex('by_date', 'timestamp', { unique: false });
       }
+
+      // Matcher database store
+      if (!db.objectStoreNames.contains(STORES.MATCHER_DB)) {
+        db.createObjectStore(STORES.MATCHER_DB, { keyPath: 'id' });
+      }
+
+      // Price cache store
+      if (!db.objectStoreNames.contains(STORES.PRICES)) {
+        const priceStore = db.createObjectStore(STORES.PRICES, { keyPath: 'cardId' });
+        priceStore.createIndex('by_updated_at', 'updatedAt', { unique: false });
+        priceStore.createIndex('by_set', 'set', { unique: false });
+      }
+
+      // Price sync metadata store
+      if (!db.objectStoreNames.contains(STORES.PRICE_SYNC_META)) {
+        db.createObjectStore(STORES.PRICE_SYNC_META, { keyPath: 'id' });
+      }
     };
 
     request.onsuccess = (event) => {
@@ -79,6 +99,17 @@ async function withTransaction(storeName, mode, callback) {
     tx.oncomplete = () => resolve(result);
     tx.onerror = (e) => reject(e.target.error);
   });
+}
+
+function cloneMatcherDatabase(database) {
+  return {
+    ...database,
+    cards: (database?.cards || []).map((card) => ({
+      ...card,
+      f: card.f instanceof Float32Array ? card.f : new Float32Array(card.f),
+      d: card.d instanceof Float32Array ? card.d : (card.d ? new Float32Array(card.d) : undefined),
+    })),
+  };
 }
 
 // ─── Card Metadata Operations ─────────────────────────────────────────────
@@ -248,9 +279,152 @@ export async function isDatabasePopulated() {
  */
 export async function clearAll() {
   const db = await openDB();
-  const tx = db.transaction([STORES.CARDS, STORES.HASHES, STORES.SCAN_HISTORY], 'readwrite');
+  const tx = db.transaction([STORES.CARDS, STORES.HASHES, STORES.SCAN_HISTORY, STORES.PRICES, STORES.PRICE_SYNC_META], 'readwrite');
   tx.objectStore(STORES.CARDS).clear();
   tx.objectStore(STORES.HASHES).clear();
   tx.objectStore(STORES.SCAN_HISTORY).clear();
+  tx.objectStore(STORES.PRICES).clear();
+  tx.objectStore(STORES.PRICE_SYNC_META).clear();
   return new Promise((resolve) => { tx.oncomplete = resolve; });
+}
+
+// ─── Matcher Database Import ──────────────────────────────────────────────
+
+/**
+ * Save a full matcher database payload locally.
+ * The payload is the parsed card-hashes.json structure.
+ */
+export async function saveMatcherDatabase(database) {
+  const normalized = cloneMatcherDatabase(database);
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.MATCHER_DB, 'readwrite');
+    const store = tx.objectStore(STORES.MATCHER_DB);
+    store.put({
+      id: 'card-hashes',
+      updatedAt: new Date().toISOString(),
+      database: normalized,
+    });
+    tx.oncomplete = () => resolve(normalized);
+    tx.onerror = (e) => reject(e.target.error);
+  });
+}
+
+/**
+ * Load the locally stored matcher database, if one exists.
+ */
+export async function loadMatcherDatabase() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.MATCHER_DB, 'readonly');
+    const store = tx.objectStore(STORES.MATCHER_DB);
+    const request = store.get('card-hashes');
+    request.onsuccess = () => {
+      const result = request.result;
+      resolve(result?.database ? cloneMatcherDatabase(result.database) : null);
+    };
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
+/**
+ * Remove the locally stored matcher database.
+ */
+export async function clearMatcherDatabase() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.MATCHER_DB, 'readwrite');
+    const store = tx.objectStore(STORES.MATCHER_DB);
+    store.delete('card-hashes');
+    tx.oncomplete = () => resolve();
+    tx.onerror = (e) => reject(e.target.error);
+  });
+}
+
+// ─── Price Cache Operations ──────────────────────────────────────────────
+
+export async function replacePriceSnapshot(records, metadata = {}) {
+  const db = await openDB();
+  const importedAt = new Date().toISOString();
+  const snapshot = {
+    id: 'latest',
+    updatedAt: importedAt,
+    ...metadata,
+    totalRecords: records.length,
+  };
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORES.PRICES, STORES.PRICE_SYNC_META], 'readwrite');
+    const priceStore = tx.objectStore(STORES.PRICES);
+    const metaStore = tx.objectStore(STORES.PRICE_SYNC_META);
+
+    priceStore.clear();
+    for (const record of records) {
+      priceStore.put(record);
+    }
+
+    metaStore.put(snapshot);
+
+    tx.oncomplete = () => resolve(snapshot);
+    tx.onerror = (e) => reject(e.target.error);
+  });
+}
+
+export async function getPriceRecord(cardId) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.PRICES, 'readonly');
+    const store = tx.objectStore(STORES.PRICES);
+    const request = store.get(cardId);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
+export async function getPriceRecords() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.PRICES, 'readonly');
+    const store = tx.objectStore(STORES.PRICES);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
+export async function loadPriceSyncMeta() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.PRICE_SYNC_META, 'readonly');
+    const store = tx.objectStore(STORES.PRICE_SYNC_META);
+    const request = store.get('latest');
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
+export async function savePriceSyncMeta(meta) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.PRICE_SYNC_META, 'readwrite');
+    const store = tx.objectStore(STORES.PRICE_SYNC_META);
+    store.put({
+      id: 'latest',
+      updatedAt: new Date().toISOString(),
+      ...meta,
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = (e) => reject(e.target.error);
+  });
+}
+
+export async function getPriceCount() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.PRICES, 'readonly');
+    const store = tx.objectStore(STORES.PRICES);
+    const request = store.count();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = (e) => reject(e.target.error);
+  });
 }

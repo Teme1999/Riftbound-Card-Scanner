@@ -1,26 +1,21 @@
-/**
- * YOLO11 Nano OBB Detector for RiftBound Cards
- *
- * This module provides the integration layer for a YOLO11 Nano model
- * converted to TensorFlow.js format for Oriented Bounding Box detection.
- *
- * In production, the model would be:
- *   1. Trained on card images using Ultralytics YOLO11n-obb
- *   2. Exported to SavedModel format
- *   3. Converted to TF.js using tensorflowjs_converter
- *   4. Loaded at startup for "warming up"
- *
- * For development/demo, this provides a simulated detector that uses
- * basic image analysis to detect card-like rectangles.
- */
+import * as ort from 'onnxruntime-web/wasm';
+import { resolveAppUrl } from './runtime.js';
 
 const MODEL_URLS = {
-  normal: '/models/yolo11n-obb-riftbound.onnx',
-  quantized: '/models/yolo11n-obb-riftbound-q8.onnx',
-  tfjs: '/models/yolo11n-obb-riftbound/model.json', // Fallback for backward compatibility
+  normal: resolveAppUrl('/models/yolo11n-obb-riftbound.onnx'),
+  quantized: resolveAppUrl('/models/yolo11n-obb-riftbound-q8.onnx'),
 };
 
-// Detection states
+ort.env.wasm.wasmPaths = resolveAppUrl('/ort/');
+ort.env.wasm.numThreads = 1;
+
+const isDevelopment = import.meta.env.DEV;
+const debugLog = (...args) => {
+  if (isDevelopment) {
+    console.log(...args);
+  }
+};
+
 export const DetectorState = {
   UNLOADED: 'unloaded',
   LOADING: 'loading',
@@ -29,392 +24,135 @@ export const DetectorState = {
   ERROR: 'error',
 };
 
+function getSourceSize(source) {
+  return {
+    width: source?.width || source?.videoWidth || source?.naturalWidth || 0,
+    height: source?.height || source?.videoHeight || source?.naturalHeight || 0,
+  };
+}
+
 class YOLODetector {
   constructor() {
-    this.model = null;
     this.onnxSession = null;
     this.state = DetectorState.UNLOADED;
-    this.inputSize = 640; // YOLO11 default input size
-    this.confidenceThreshold = 0.6;
+    this.inputSize = 640;
+    this.confidenceThreshold = 0.75;
     this.iouThreshold = 0.45;
-    this.useSimulation = true; // Toggle for demo mode
-    this.modelFormat = 'onnx'; // 'onnx' or 'tfjs'
-    this.modelPreference = 'quantized'; // 'normal' or 'quantized'
+    this.modelFormat = 'onnx';
+    this.modelPreference = 'quantized';
     this._warmupComplete = false;
   }
 
-  /**
-   * Load the YOLO model and perform warmup inference
-   * @param {string} modelPreference - 'normal' or 'quantized'
-   */
-  async initialize(modelPreference = 'normal') {
+  async initialize(modelPreference = 'quantized') {
     this.state = DetectorState.LOADING;
-    this.modelPreference = modelPreference;
+    this.modelPreference = modelPreference === 'normal' ? 'normal' : 'quantized';
 
     try {
-      // Try to load ONNX model first (preferred)
-      if (typeof window !== 'undefined' && window.ort) {
-        try {
-          const modelUrl = MODEL_URLS[modelPreference];
-          console.log('[YOLO] Loading ONNX model:', modelUrl);
+      const modelUrl = MODEL_URLS[this.modelPreference];
+      debugLog('[YOLO] Loading ONNX model:', modelUrl);
 
-          this.onnxSession = await window.ort.InferenceSession.create(modelUrl, {
-            executionProviders: ['wasm'],
-            graphOptimizationLevel: 'all',
-          });
+      this.onnxSession = await ort.InferenceSession.create(modelUrl, {
+        executionProviders: ['wasm'],
+        graphOptimizationLevel: 'all',
+      });
 
-          this.modelFormat = 'onnx';
-          this.useSimulation = false;
-          console.log('[YOLO] ONNX model loaded:', modelPreference);
-        } catch (e) {
-          console.warn('[YOLO] Could not load ONNX model, trying TF.js fallback:', e.message);
-
-          // Fallback to TF.js if ONNX fails
-          if (window.tf) {
-            try {
-              this.model = await window.tf.loadGraphModel(MODEL_URLS.tfjs);
-              this.modelFormat = 'tfjs';
-              this.useSimulation = false;
-              console.log('[YOLO] TF.js model loaded (fallback)');
-            } catch (tfjsError) {
-              console.warn('[YOLO] TF.js also failed, using simulation mode:', tfjsError.message);
-              this.useSimulation = true;
-            }
-          } else {
-            console.log('[YOLO] ONNX Runtime not available, using simulation mode');
-            this.useSimulation = true;
-          }
-        }
-      } else if (typeof window !== 'undefined' && window.tf) {
-        // No ONNX Runtime, try TF.js
-        try {
-          this.model = await window.tf.loadGraphModel(MODEL_URLS.tfjs);
-          this.modelFormat = 'tfjs';
-          this.useSimulation = false;
-          console.log('[YOLO] TF.js model loaded');
-        } catch (e) {
-          console.warn('[YOLO] Could not load model, using simulation mode:', e.message);
-          this.useSimulation = true;
-        }
-      } else {
-        console.log('[YOLO] No model runtime available, using simulation mode');
-        this.useSimulation = true;
-      }
-
-      // Warmup: run a dummy inference to eliminate first-run lag
       this.state = DetectorState.WARMING;
       await this._warmup();
 
       this.state = DetectorState.READY;
-      const mode = this.useSimulation ? 'simulation' : `${this.modelFormat} (${modelPreference})`;
-      console.log('[YOLO] Detector ready (mode:', mode, ')');
+      debugLog('[YOLO] Detector ready:', this.modelPreference);
     } catch (error) {
       this.state = DetectorState.ERROR;
-      console.error('[YOLO] Initialization failed:', error);
-      throw error;
+      const message = error?.message || String(error);
+      throw new Error(`Failed to load ONNX detector model from /models/: ${message}`);
     }
   }
 
   async _warmup() {
-    if (!this.useSimulation) {
-      if (this.modelFormat === 'onnx' && this.onnxSession) {
-        // ONNX warmup: create dummy tensor and run inference
-        const dummyData = new Float32Array(this.inputSize * this.inputSize * 3).fill(0.5);
-        const dummyTensor = new window.ort.Tensor('float32', dummyData, [1, 3, this.inputSize, this.inputSize]);
-        await this.onnxSession.run({ images: dummyTensor });
-      } else if (this.modelFormat === 'tfjs' && this.model) {
-        // TF.js warmup: create dummy tensor and run inference
-        const dummyInput = window.tf.zeros([1, this.inputSize, this.inputSize, 3]);
-        await this.model.predict(dummyInput);
-        dummyInput.dispose();
-      }
-    } else {
-      // Simulated warmup: small delay to mimic
-      await new Promise(resolve => setTimeout(resolve, 300));
+    if (!this.onnxSession) {
+      throw new Error('ONNX detector session is not initialized.');
     }
+
+    const dummyData = new Float32Array(this.inputSize * this.inputSize * 3).fill(0.5);
+    const dummyTensor = new ort.Tensor('float32', dummyData, [1, 3, this.inputSize, this.inputSize]);
+    await this.onnxSession.run({ images: dummyTensor });
     this._warmupComplete = true;
   }
 
-  /**
-   * Detect cards in a video frame
-   * @param {HTMLCanvasElement|HTMLVideoElement} source - Input frame
-   * @returns {Array<Detection>} Array of detected cards with OBB coordinates
-   *
-   * Detection shape:
-   * {
-   *   box: { cx, cy, w, h, angle },  // Oriented bounding box
-   *   confidence: number,
-   *   cropCanvas: HTMLCanvasElement   // Cropped & de-rotated card image
-   * }
-   */
   async detect(source) {
-    if (this.state !== DetectorState.READY) {
+    if (this.state !== DetectorState.READY || !this.onnxSession) {
       return [];
     }
 
-    if (this.useSimulation) {
-      return this._simulatedDetect(source);
+    const { width, height } = getSourceSize(source);
+    if (!width || !height) {
+      return [];
     }
 
-    if (this.modelFormat === 'onnx') {
-      return this._onnxDetect(source);
-    }
-
-    return this._tfjsDetect(source);
+    return this._onnxDetect(source, width, height);
   }
 
-  /**
-   * ONNX model inference pipeline
-   */
-  async _onnxDetect(source) {
-    const srcW = source.width || source.videoWidth;
-    const srcH = source.height || source.videoHeight;
-
-    // Letterbox preprocess: maintain aspect ratio, pad with 114/255 gray
+  async _onnxDetect(source, srcW, srcH) {
     const scale = Math.min(this.inputSize / srcW, this.inputSize / srcH);
     const newW = Math.round(srcW * scale);
     const newH = Math.round(srcH * scale);
     const padX = (this.inputSize - newW) / 2;
     const padY = (this.inputSize - newH) / 2;
 
-    // Create canvas for preprocessing
     const canvas = document.createElement('canvas');
     canvas.width = this.inputSize;
     canvas.height = this.inputSize;
     const ctx = canvas.getContext('2d');
 
-    // Fill with gray (114)
     ctx.fillStyle = '#727272';
     ctx.fillRect(0, 0, this.inputSize, this.inputSize);
-
-    // Draw resized image
     ctx.drawImage(source, 0, 0, srcW, srcH, padX, padY, newW, newH);
 
-    // Get image data and convert to NCHW format (channels first)
     const imageData = ctx.getImageData(0, 0, this.inputSize, this.inputSize);
     const data = imageData.data;
     const inputData = new Float32Array(3 * this.inputSize * this.inputSize);
+    const planeSize = this.inputSize * this.inputSize;
 
-    // Convert RGBA to RGB and normalize to [0, 1], channels first
-    for (let i = 0; i < this.inputSize * this.inputSize; i++) {
-      inputData[i] = data[i * 4] / 255.0; // R
-      inputData[this.inputSize * this.inputSize + i] = data[i * 4 + 1] / 255.0; // G
-      inputData[2 * this.inputSize * this.inputSize + i] = data[i * 4 + 2] / 255.0; // B
+    for (let i = 0; i < planeSize; i += 1) {
+      inputData[i] = data[i * 4] / 255.0;
+      inputData[planeSize + i] = data[i * 4 + 1] / 255.0;
+      inputData[2 * planeSize + i] = data[i * 4 + 2] / 255.0;
     }
 
-    // Create ONNX tensor
-    const tensor = new window.ort.Tensor('float32', inputData, [1, 3, this.inputSize, this.inputSize]);
-
-    // Run inference
+    const tensor = new ort.Tensor('float32', inputData, [1, 3, this.inputSize, this.inputSize]);
     const results = await this.onnxSession.run({ images: tensor });
     const output = results.output0 || results[Object.keys(results)[0]];
     const outputData = output.data;
 
-    // Post-process OBB outputs
-    // YOLO11 OBB output shape: [1, 6, 8400] (transposed)
     const detections = [];
-    const numDetections = 8400;
+    const numDetections = output.dims?.[2] || 8400;
 
-    for (let i = 0; i < numDetections; i++) {
+    for (let i = 0; i < numDetections; i += 1) {
       const conf = outputData[4 * numDetections + i];
-
-      if (conf >= this.confidenceThreshold) {
-        // Map from letterbox space back to original image coords
-        const cx = (outputData[0 * numDetections + i] - padX) / scale;
-        const cy = (outputData[1 * numDetections + i] - padY) / scale;
-        const w = outputData[2 * numDetections + i] / scale;
-        const h = outputData[3 * numDetections + i] / scale;
-        const angle = outputData[5 * numDetections + i];
-
-        const cropCanvas = this._cropRotated(source, cx, cy, w, h, angle);
-
-        detections.push({
-          box: { cx, cy, w, h, angle },
-          confidence: conf,
-          cropCanvas,
-        });
+      if (conf < this.confidenceThreshold) {
+        continue;
       }
+
+      // Map from YOLO letterbox space back into the original source coordinates.
+      const cx = (outputData[0 * numDetections + i] - padX) / scale;
+      const cy = (outputData[1 * numDetections + i] - padY) / scale;
+      const w = outputData[2 * numDetections + i] / scale;
+      const h = outputData[3 * numDetections + i] / scale;
+      const angle = outputData[5 * numDetections + i];
+      const cropCanvas = this._cropRotated(source, srcW, srcH, cx, cy, w, h, angle);
+
+      detections.push({
+        box: { cx, cy, w, h, angle },
+        confidence: conf,
+        cropCanvas,
+      });
     }
 
     return this._nmsOBB(detections);
   }
 
-  /**
-   * TensorFlow.js model inference pipeline
-   */
-  async _tfjsDetect(source) {
-    const tf = window.tf;
-
-    const srcW = source.width || source.videoWidth;
-    const srcH = source.height || source.videoHeight;
-
-    // Letterbox preprocess: maintain aspect ratio, pad with 114/255 gray
-    const scale = Math.min(this.inputSize / srcW, this.inputSize / srcH);
-    const newW = Math.round(srcW * scale);
-    const newH = Math.round(srcH * scale);
-    const padX = (this.inputSize - newW) / 2;
-    const padY = (this.inputSize - newH) / 2;
-
-    const tensor = tf.tidy(() => {
-      let img = tf.browser.fromPixels(source);
-      img = tf.image.resizeBilinear(img, [newH, newW]);
-      img = img.toFloat().div(255.0);
-      const padTop = Math.floor(padY);
-      const padBottom = this.inputSize - newH - padTop;
-      const padLeft = Math.floor(padX);
-      const padRight = this.inputSize - newW - padLeft;
-      img = tf.pad(img, [[padTop, padBottom], [padLeft, padRight], [0, 0]], 0.4470588);
-      return img.expandDims(0);
-    });
-
-    // Run inference
-    const predictions = await this.model.predict(tensor);
-    tensor.dispose();
-
-    // Post-process OBB outputs
-    // YOLO11 OBB output shape: [1, 6, 8400] (transposed)
-    // 6 channels = [cx, cy, w, h, class_score, angle] (nc=1)
-    // 8400 = number of candidate detections
-    const outputData = await predictions.data();
-    predictions.dispose();
-
-    const detections = [];
-    const numDetections = 8400;
-
-    for (let i = 0; i < numDetections; i++) {
-      // Data is laid out as [ch0_det0, ch0_det1, ..., ch1_det0, ch1_det1, ...]
-      // Channel 4 = class score (already sigmoid in model), Channel 5 = angle (already radians)
-      const conf = outputData[4 * numDetections + i];
-
-      if (conf >= this.confidenceThreshold) {
-        // Map from letterbox space back to original image coords
-        const cx = (outputData[0 * numDetections + i] - padX) / scale;
-        const cy = (outputData[1 * numDetections + i] - padY) / scale;
-        const w = outputData[2 * numDetections + i] / scale;
-        const h = outputData[3 * numDetections + i] / scale;
-        const angle = outputData[5 * numDetections + i];
-
-        const cropCanvas = this._cropRotated(source, cx, cy, w, h, angle);
-
-        detections.push({
-          box: { cx, cy, w, h, angle },
-          confidence: conf,
-          cropCanvas,
-        });
-      }
-    }
-
-    return this._nmsOBB(detections);
-  }
-
-  /**
-   * Simulated detection using basic image analysis
-   * Detects a card-like region in the center of the frame
-   */
-  _simulatedDetect(source) {
-    const canvas = source instanceof HTMLCanvasElement ? source : this._videoToCanvas(source);
-    const ctx = canvas.getContext('2d');
-    const { width, height } = canvas;
-
-    // Analyze the center region for card-like content
-    // A card is roughly 63mm x 88mm = aspect ratio ~0.716
-    const cardAspect = 0.716;
-    const guideW = width * 0.55;
-    const guideH = guideW / cardAspect;
-    const guideCx = width / 2;
-    const guideCy = height / 2;
-
-    // Sample the guide region and check for sufficient variance (=card present)
-    const sampleX = Math.floor(guideCx - guideW / 2);
-    const sampleY = Math.floor(guideCy - guideH / 2);
-    const sampleW = Math.floor(guideW);
-    const sampleH = Math.floor(guideH);
-
-    if (sampleW <= 0 || sampleH <= 0) return [];
-
-    try {
-      const imgData = ctx.getImageData(
-        Math.max(0, sampleX),
-        Math.max(0, sampleY),
-        Math.min(sampleW, width - sampleX),
-        Math.min(sampleH, height - sampleY)
-      );
-
-      // Compute color variance to determine if there's a card
-      const { variance, edgeDensity } = this._analyzeRegion(imgData);
-
-      // Threshold: if sufficient texture/edges, consider it a card
-      if (variance > 800 && edgeDensity > 0.05) {
-        const cropCanvas = document.createElement('canvas');
-        cropCanvas.width = sampleW;
-        cropCanvas.height = sampleH;
-        const cropCtx = cropCanvas.getContext('2d');
-        cropCtx.putImageData(imgData, 0, 0);
-
-        return [{
-          box: { cx: guideCx, cy: guideCy, w: guideW, h: guideH, angle: 0 },
-          confidence: Math.min(0.95, 0.5 + (variance / 5000) + (edgeDensity * 2)),
-          cropCanvas,
-        }];
-      }
-    } catch (e) {
-      // Canvas security error in cross-origin scenarios
-    }
-
-    return [];
-  }
-
-  /**
-   * Analyze a region for card-like characteristics
-   */
-  _analyzeRegion(imageData) {
-    const data = imageData.data;
-    const pixelCount = data.length / 4;
-
-    let sumR = 0, sumG = 0, sumB = 0;
-    for (let i = 0; i < data.length; i += 4) {
-      sumR += data[i];
-      sumG += data[i + 1];
-      sumB += data[i + 2];
-    }
-    const meanR = sumR / pixelCount;
-    const meanG = sumG / pixelCount;
-    const meanB = sumB / pixelCount;
-
-    let variance = 0;
-    for (let i = 0; i < data.length; i += 4) {
-      variance += (data[i] - meanR) ** 2;
-      variance += (data[i + 1] - meanG) ** 2;
-      variance += (data[i + 2] - meanB) ** 2;
-    }
-    variance /= (pixelCount * 3);
-
-    // Simple edge detection (horizontal gradient)
-    const w = imageData.width;
-    let edgeCount = 0;
-    const step = 4; // sample every 4th pixel for speed
-    for (let y = 0; y < imageData.height; y += step) {
-      for (let x = 1; x < w; x += step) {
-        const idx = (y * w + x) * 4;
-        const prevIdx = (y * w + x - 1) * 4;
-        const diff = Math.abs(data[idx] - data[prevIdx]) +
-                    Math.abs(data[idx + 1] - data[prevIdx + 1]) +
-                    Math.abs(data[idx + 2] - data[prevIdx + 2]);
-        if (diff > 80) edgeCount++;
-      }
-    }
-    const sampledPixels = Math.ceil(imageData.height / step) * Math.ceil((w - 1) / step);
-    const edgeDensity = edgeCount / sampledPixels;
-
-    return { variance, edgeDensity };
-  }
-
-  /**
-   * Crop and de-rotate a detected card from the source
-   */
-  _cropRotated(source, cx, cy, w, h, angle) {
-    // Rotate full image so card is axis-aligned, then crop card region
-    const diag = Math.sqrt(source.width * source.width + source.height * source.height);
+  _cropRotated(source, sourceWidth, sourceHeight, cx, cy, w, h, angle) {
+    const diag = Math.sqrt(sourceWidth * sourceWidth + sourceHeight * sourceHeight);
     const big = document.createElement('canvas');
     big.width = Math.ceil(diag);
     big.height = Math.ceil(diag);
@@ -426,15 +164,12 @@ class YOLODetector {
     bctx.drawImage(source, -cx, -cy);
 
     const canvas = document.createElement('canvas');
-    canvas.width = Math.round(w);
-    canvas.height = Math.round(h);
+    canvas.width = Math.max(1, Math.round(w));
+    canvas.height = Math.max(1, Math.round(h));
     canvas.getContext('2d').drawImage(big, bcx - w / 2, bcy - h / 2, w, h, 0, 0, w, h);
     return canvas;
   }
 
-  /**
-   * Non-Maximum Suppression for Oriented Bounding Boxes
-   */
   _nmsOBB(detections) {
     if (detections.length <= 1) return detections;
 
@@ -443,9 +178,8 @@ class YOLODetector {
 
     for (const det of detections) {
       let dominated = false;
-      for (const kept_det of kept) {
-        const iou = this._computeOBBIoU(det.box, kept_det.box);
-        if (iou > this.iouThreshold) {
+      for (const keptDet of kept) {
+        if (this._computeOBBIoU(det.box, keptDet.box) > this.iouThreshold) {
           dominated = true;
           break;
         }
@@ -456,9 +190,6 @@ class YOLODetector {
     return kept;
   }
 
-  /**
-   * Approximate IoU for OBBs (using axis-aligned approximation)
-   */
   _computeOBBIoU(box1, box2) {
     const x1 = Math.max(box1.cx - box1.w / 2, box2.cx - box2.w / 2);
     const y1 = Math.max(box1.cy - box1.h / 2, box2.cy - box2.h / 2);
@@ -473,29 +204,17 @@ class YOLODetector {
     return union > 0 ? intersection / union : 0;
   }
 
-  _videoToCanvas(video) {
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0);
-    return canvas;
-  }
-
   dispose() {
-    if (this.model) {
-      this.model.dispose();
-      this.model = null;
-    }
-    if (this.onnxSession) {
-      // ONNX sessions don't have a dispose method, just set to null
-      this.onnxSession = null;
+    const session = this.onnxSession;
+    this.onnxSession = null;
+    if (typeof session?.release === 'function') {
+      void session.release();
     }
     this.state = DetectorState.UNLOADED;
+    this._warmupComplete = false;
   }
 }
 
-// Singleton instance
 let detectorInstance = null;
 
 export function getDetector() {

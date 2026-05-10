@@ -1,40 +1,35 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="theme-color" content="#0a0e17" />
-    <meta name="description" content="Free, offline AI-powered RiftBound TCG card scanner. Runs entirely in your browser with a local YOLO model — no server, no signup, no cost. Detect cards via camera or photo and manage your collection." />
-    <meta name="author" content="Nekoraru" />
-    <meta name="keywords" content="RiftBound, TCG, card scanner, AI, YOLO, collection tracker, card recognition, offline, free, no server" />
-    <link rel="icon" type="image/x-icon" href="/images/neko.ico" />
+    <meta name="description" content="Independent, local-first Riftbound TCG card scanner for desktop and browser. Detect cards with a local ONNX model, manage your collection on-device, and export CSV files." />
+    <meta name="author" content="Teme1999" />
+    <meta name="keywords" content="Riftbound, TCG, card scanner, ONNX, YOLO, collection tracker, card recognition, offline, desktop" />
+    <link rel="icon" type="image/x-icon" href="/images/riftboundscanner.ico" />
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="RiftBound Scanner" />
-    <meta property="og:description" content="Free, offline AI card scanner for RiftBound TCG. Runs entirely in your browser — no server, no signup, no cost." />
-    <meta property="og:site_name" content="RiftBound Scanner" />
-    <meta property="og:image" content="/images/neko.webp" />
+    <meta property="og:title" content="Riftbound Scanner" />
+    <meta property="og:description" content="Independent local-first card scanner and collection tool for Riftbound TCG." />
+    <meta property="og:site_name" content="Riftbound Scanner" />
+    <meta property="og:image" content="/images/riftboundscanner.png" />
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="RiftBound Scanner" />
-    <meta name="twitter:description" content="Free, offline AI card scanner for RiftBound TCG. Runs entirely in your browser — no server, no signup, no cost." />
-    <meta name="twitter:image" content="/images/neko.webp" />
+    <meta name="twitter:title" content="Riftbound Scanner" />
+    <meta name="twitter:description" content="Independent local-first card scanner and collection tool for Riftbound TCG." />
+    <meta name="twitter:image" content="/images/riftboundscanner.png" />
 
     <!-- PWA / Mobile -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Riftbound Scanner" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <link rel="apple-touch-icon" href="/images/neko.webp" />
+    <link rel="apple-touch-icon" href="/images/riftboundscanner.png" />
 
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Source+Sans+3:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-    <title>RiftBound Scanner</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0"></script>
-    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.0/dist/ort.min.js"></script>
+    <title>Riftbound Scanner</title>
   </head>
   <body class="bg-rift-900 text-white">
     <div id="root"></div>

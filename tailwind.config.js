@@ -29,9 +29,9 @@ export default {
         },
       },
       fontFamily: {
-        display: ['"Cinzel"', 'serif'],
-        body: ['"Source Sans 3"', 'sans-serif'],
-        mono: ['"JetBrains Mono"', 'monospace'],
+        display: ['Georgia', 'Cambria', '"Times New Roman"', 'serif'],
+        body: ['Inter', '"Segoe UI"', 'Roboto', 'Arial', 'sans-serif'],
+        mono: ['"Cascadia Code"', '"SFMono-Regular"', 'Consolas', 'monospace'],
       },
     },
   },

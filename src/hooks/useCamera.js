@@ -3,7 +3,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 /**
  * Hook for managing camera access and video streaming
  */
-export function useCamera() {
+export function useCamera({ deviceId = '' } = {}) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const [isActive, setIsActive] = useState(false);
@@ -11,6 +11,41 @@ export function useCamera() {
   const [facingMode, setFacingMode] = useState('environment'); // 'user' | 'environment'
   const [capabilities, setCapabilities] = useState(null);
   const [torchOn, setTorchOn] = useState(false);
+
+  const applyFocusConstraints = useCallback(async (track) => {
+    if (!track?.applyConstraints) return false;
+
+    const supportedConstraints = navigator.mediaDevices?.getSupportedConstraints?.() || {};
+    const trackCapabilities = track.getCapabilities?.() || {};
+    const canUseFocusMode = Boolean(supportedConstraints.focusMode || trackCapabilities.focusMode);
+    const canUsePointsOfInterest = Boolean(supportedConstraints.pointsOfInterest || trackCapabilities.pointsOfInterest);
+
+    const attempts = [];
+
+    if (canUseFocusMode && canUsePointsOfInterest) {
+      attempts.push({ advanced: [{ focusMode: 'continuous', pointsOfInterest: [{ x: 0.5, y: 0.5 }] }] });
+    }
+
+    if (canUseFocusMode) {
+      attempts.push({ advanced: [{ focusMode: 'continuous' }] });
+      attempts.push({ focusMode: 'continuous' });
+    }
+
+    if (canUsePointsOfInterest) {
+      attempts.push({ advanced: [{ pointsOfInterest: [{ x: 0.5, y: 0.5 }] }] });
+    }
+
+    for (const constraints of attempts) {
+      try {
+        await track.applyConstraints(constraints);
+        return true;
+      } catch {
+        // Try the next best-effort focus constraint.
+      }
+    }
+
+    return false;
+  }, []);
 
   const startCamera = useCallback(async () => {
     try {
@@ -23,13 +58,18 @@ export function useCamera() {
 
       const constraints = {
         video: {
-          facingMode: { ideal: facingMode },
           width: { ideal: 1280 },
           height: { ideal: 720 },
           frameRate: { ideal: 30 },
         },
         audio: false,
       };
+
+      if (deviceId) {
+        constraints.video.deviceId = { exact: deviceId };
+      } else {
+        constraints.video.facingMode = { ideal: facingMode };
+      }
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
@@ -44,6 +84,7 @@ export function useCamera() {
       if (track) {
         const caps = track.getCapabilities?.();
         setCapabilities(caps || null);
+        await applyFocusConstraints(track);
       }
 
       setTorchOn(false);
@@ -53,7 +94,14 @@ export function useCamera() {
       setError(getErrorMessage(err));
       setIsActive(false);
     }
-  }, [facingMode]);
+  }, [deviceId, facingMode]);
+
+  const refocus = useCallback(async () => {
+    if (!streamRef.current) return false;
+    const track = streamRef.current.getVideoTracks()[0];
+    if (!track) return false;
+    return applyFocusConstraints(track);
+  }, [applyFocusConstraints]);
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -92,7 +140,7 @@ export function useCamera() {
     if (isActive) {
       startCamera();
     }
-  }, [facingMode]);
+  }, [deviceId, facingMode, isActive, startCamera]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -110,6 +158,8 @@ export function useCamera() {
     if (!videoRef.current || !isActive) return null;
 
     const video = videoRef.current;
+    if (!video.videoWidth || !video.videoHeight) return null;
+
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -119,6 +169,7 @@ export function useCamera() {
   }, [isActive]);
 
   const hasTorch = !!(capabilities?.torch);
+  const hasFocusControl = !!(capabilities?.focusMode || capabilities?.focusDistance || capabilities?.pointsOfInterest);
 
   return {
     videoRef,
@@ -127,11 +178,13 @@ export function useCamera() {
     facingMode,
     capabilities,
     hasTorch,
+    hasFocusControl,
     torchOn,
     startCamera,
     stopCamera,
     toggleFacing,
     toggleTorch,
+    refocus,
     captureFrame,
   };
 }

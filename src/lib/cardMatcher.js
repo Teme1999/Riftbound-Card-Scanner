@@ -3,7 +3,16 @@
  * Used by both camera mode (useCardDetection) and upload mode (ScanTab).
  */
 
-const HASHES_URL = `/card-hashes.json?v=${__BUILD_TIME__}`;
+import { loadMatcherDatabase, saveMatcherDatabase } from './indexedDB.js';
+import { resolveAppUrl } from './runtime.js';
+
+const HASHES_URL = resolveAppUrl(`/card-hashes.json?v=${__BUILD_TIME__}`);
+const isDevelopment = import.meta.env.DEV;
+const debugLog = (...args) => {
+  if (isDevelopment) {
+    console.log(...args);
+  }
+};
 
 // Artwork crop region (portrait card) — excludes frame, name bar, text/stats
 const ART_TOP = 0.05;
@@ -20,51 +29,129 @@ export function getCardImageUrl(cardId) {
   return `/cards/${cardId}.webp`;
 }
 
+export function normalizeScanSetFilter(setFilter) {
+  if (!setFilter) return [];
+
+  if (Array.isArray(setFilter)) {
+    return setFilter
+      .map((value) => String(value || '').trim().toUpperCase())
+      .filter((value) => value && value !== 'ALL');
+  }
+
+  if (setFilter instanceof Set) {
+    return [...setFilter]
+      .map((value) => String(value || '').trim().toUpperCase())
+      .filter((value) => value && value !== 'ALL');
+  }
+
+  const normalized = String(setFilter || '').trim().toUpperCase();
+  if (!normalized || normalized === 'ALL') return [];
+  return [normalized];
+}
+
+export function filterCardsBySet(cards, setFilter) {
+  const selectedSets = normalizeScanSetFilter(setFilter);
+  if (selectedSets.length === 0) {
+    return cards;
+  }
+
+  const selectedSetLookup = new Set(selectedSets);
+  return cards.filter((card) => selectedSetLookup.has(String(card.set || '').toUpperCase()));
+}
+
 class CardMatcher {
   constructor() {
     this.cards = [];
     this.gridSize = 8;
     this.ready = false;
     this._tmpCanvas = null;
+    this.databaseSource = 'bundled';
   }
 
   async initialize() {
-    const resp = await fetch(HASHES_URL);
-    if (!resp.ok) throw new Error(`Failed to load card DB: ${resp.status}`);
+    this.ready = false;
+    this.cards = [];
+    this.databaseSource = 'bundled';
+
+    try {
+      const localDatabase = await loadMatcherDatabase();
+      if (localDatabase) {
+        this._applyDatabase(localDatabase);
+        this.databaseSource = 'local';
+        debugLog(`[CardMatcher] Loaded ${this.cards.length} cards from local database (${this.gridSize}x${this.gridSize} grid)`);
+        return;
+      }
+    } catch (error) {
+      console.warn('[CardMatcher] Could not load local database, falling back to bundled asset:', error);
+    }
+
+    let resp;
+    try {
+      resp = await fetch(HASHES_URL);
+    } catch (error) {
+      throw new Error('Missing card hash database at /card-hashes.json. Use the Update Card Database button to import a generated card-hashes.json file from this PC.');
+    }
+
+    if (!resp.ok) {
+      throw new Error(`Missing card hash database at /card-hashes.json (HTTP ${resp.status}). Use the Update Card Database button to import a generated card-hashes.json file from this PC.`);
+    }
+
     const data = await resp.json();
-    this.gridSize = data.gridSize;
-    this.cards = data.cards.map(c => {
-      const f = new Float32Array(c.f);
+    this._applyDatabase(data);
+    this.databaseSource = 'bundled';
+    debugLog(`[CardMatcher] Loaded ${this.cards.length} cards from bundled asset (${this.gridSize}x${this.gridSize} grid)`);
+  }
+
+  _applyDatabase(database) {
+    this.gridSize = database.gridSize;
+    this.cards = (database.cards || []).map((card) => {
+      const f = card.f instanceof Float32Array ? card.f : new Float32Array(card.f);
       let normSq = 0;
       for (let i = 0; i < f.length; i++) normSq += f[i] * f[i];
-      return { ...c, f, norm: Math.sqrt(normSq) };
+      return { ...card, f, norm: Math.sqrt(normSq) };
     });
     this.ready = true;
-    console.log(`[CardMatcher] Loaded ${this.cards.length} cards (${this.gridSize}x${this.gridSize} grid)`);
+  }
+
+  async setDatabase(database) {
+    const normalized = {
+      gridSize: database.gridSize || this.gridSize,
+      cards: database.cards || [],
+    };
+
+    await saveMatcherDatabase(normalized);
+    this._applyDatabase(normalized);
+    this.databaseSource = 'local';
+    debugLog(`[CardMatcher] Database updated locally (${this.cards.length} cards)`);
   }
 
   /**
    * Identify a card from a cropped canvas using color grid similarity.
    *
    * @param {HTMLCanvasElement} cropCanvas - De-rotated card crop
-   * @returns {{ card: object, similarity: number } | null}
+   * @returns {{ card: object, similarity: number, secondBestSim: number } | null}
    */
-  identify(cropCanvas) {
+  identify(cropCanvas, options = {}) {
     if (!this.ready || this.cards.length === 0) return null;
 
+    const candidateCards = filterCardsBySet(this.cards, options.setFilter);
     const art = this._cropArtwork(cropCanvas);
     const features = this._computeColorGrid(art);
 
     let bestCard = null;
     let bestSim = -1;
-    for (const card of this.cards) {
+    let secondBestSim = -1;
+    for (const card of candidateCards) {
       const sim = this._cosineSimilarity(features, card.f);
       if (sim > bestSim) {
+        secondBestSim = bestSim;
         bestSim = sim;
         bestCard = card;
+      } else if (sim > secondBestSim) {
+        secondBestSim = sim;
       }
     }
-    return bestCard ? { card: bestCard, similarity: bestSim } : null;
+    return bestCard ? { card: bestCard, similarity: bestSim, secondBestSim } : null;
   }
 
   _cropArtwork(canvas) {

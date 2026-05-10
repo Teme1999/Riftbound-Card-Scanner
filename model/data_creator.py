@@ -25,7 +25,7 @@ TEXTURES_DIR = os.path.join(BASE_DIR, "textures")
 DISTRACTORS_DIR = os.path.join(BASE_DIR, "distractors")
 
 # Dataset generation settings
-IMAGES_PER_CARD = 150
+IMAGES_PER_CARD = 50
 OUTPUT_SIZE = 640
 MAX_CARDS_PER_IMAGE = 5
 TRAIN_RATIO = 0.85
@@ -50,6 +50,7 @@ CUTOUT_PROB = 0.15
 MOSAIC_PROB = 0.25
 GRID_PROB = 0.15
 DISTRACTOR_PROB = 0.4
+NEGATIVE_IMAGE_PROB = 0.25
 HORIZONTAL_FLIP_PROB = 0.5
 VIGNETTE_PROB = 0.3
 COLOR_JITTER_PROB = 0.4
@@ -775,7 +776,11 @@ def apply_cutout(image: np.ndarray, labels: list[str]) -> np.ndarray:
     return result
 
 
-def add_distractor_objects(bg: np.ndarray, num_distractors: int | None = None) -> np.ndarray:
+def add_distractor_objects(
+    bg: np.ndarray,
+    num_distractors: int | None = None,
+    force: bool = False,
+) -> np.ndarray:
     """
     Composites random distractor objects onto the background.
 
@@ -793,11 +798,11 @@ def add_distractor_objects(bg: np.ndarray, num_distractors: int | None = None) -
     """
     distractors = get_distractors()
 
-    if not distractors or random.random() > DISTRACTOR_PROB:
+    if not distractors or (not force and random.random() > DISTRACTOR_PROB):
         return bg
 
     if num_distractors is None:
-        num_distractors = random.randint(1, 3)
+        num_distractors = random.randint(2, 4)
 
     h_bg, w_bg = bg.shape[:2]
 
@@ -809,7 +814,7 @@ def add_distractor_objects(bg: np.ndarray, num_distractors: int | None = None) -
             continue
 
         # Random scale
-        scale = random.uniform(0.05, 0.20)
+        scale = random.uniform(0.08, 0.30)
         new_h = int(h_bg * scale)
         new_w = int(new_h * dist_img.shape[1] / dist_img.shape[0])
 
@@ -819,8 +824,8 @@ def add_distractor_objects(bg: np.ndarray, num_distractors: int | None = None) -
         dist_img = cv2.resize(dist_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
         # Random position
-        x = random.randint(0, w_bg - new_w)
-        y = random.randint(0, h_bg - new_h)
+        x = random.randint(0, max(0, w_bg - new_w))
+        y = random.randint(0, max(0, h_bg - new_h))
 
         # Random rotation
         if random.random() < 0.7:
@@ -847,6 +852,26 @@ def add_distractor_objects(bg: np.ndarray, num_distractors: int | None = None) -
         bg_region = bg[y:y2, x:x2].astype(np.float32)
         blended = rgb[:h_clip, :w_clip] * alpha[:h_clip, :w_clip] + bg_region * (1 - alpha[:h_clip, :w_clip])
         bg[y:y2, x:x2] = blended.astype(np.uint8)
+
+    return bg
+
+
+def generate_negative_image() -> np.ndarray:
+    """
+    Generates a distractor-only negative scene with no card labels.
+
+    These images teach the detector to ignore hands, sleeves, desk clutter,
+    and other card-adjacent objects that should not trigger a card box.
+    """
+    bg = generate_random_background(OUTPUT_SIZE)
+    bg = add_lighting_gradient(bg)
+    bg = add_distractor_objects(bg, num_distractors=random.randint(2, 5), force=True)
+
+    # Make negatives visually messy so they resemble false-positive conditions.
+    bg = augment_color(bg)
+    bg = add_vignette(bg)
+    bg = apply_motion_blur(bg)
+    bg = apply_jpeg_artifacts(bg)
 
     return bg
 
@@ -1318,11 +1343,16 @@ def _generate_and_save(task: tuple[int, str]) -> bool:
         True if the image was saved, False if skipped (no valid labels).
     """
     idx, split = task
-    use_mosaic = split == "train"
-    img, labels = generate_image(_worker_card_paths, use_mosaic=use_mosaic)
+    use_negative = random.random() < NEGATIVE_IMAGE_PROB
+    if use_negative:
+        img = generate_negative_image()
+        labels = []
+    else:
+        use_mosaic = split == "train"
+        img, labels = generate_image(_worker_card_paths, use_mosaic=use_mosaic)
 
-    if not labels:
-        return False
+        if not labels:
+            return False
 
     name = f"synth_{idx:06d}"
     img_path = os.path.join(DATASET_DIR, split, "images", f"{name}.jpg")
@@ -1330,7 +1360,8 @@ def _generate_and_save(task: tuple[int, str]) -> bool:
 
     cv2.imwrite(img_path, img, [cv2.IMWRITE_JPEG_QUALITY, 92])
     with open(lbl_path, "w") as f:
-        f.write("\n".join(labels) + "\n")
+                if labels:
+                    f.write("\n".join(labels) + "\n")
 
     return True
 

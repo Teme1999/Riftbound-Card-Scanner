@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ChevronDown, Plus, Minus, CheckSquare, Square, Trash2, Sparkles, Search, X } from 'lucide-react';
 import { DOMAIN_COLORS, RARITY_STYLES, isFoilOnly } from '../../data/sampleCards.js';
 import { getCardImageUrl, getMatcher } from '../../lib/cardMatcher.js';
+import { formatPrice } from '../../lib/priceFormat.js';
 
 /**
  * Build a card data object directly from the match entry.
@@ -40,7 +41,12 @@ export default function CardDetailPanel({
   isSelected,
   onSelect,
   onRemove,
+  onQuickAddDuplicate,
+  onQuickRemoveDuplicate,
   quantity,
+  priceRecord,
+  priceCurrency = 'EUR',
+  priceExchangeRates,
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -100,10 +106,13 @@ export default function CardDetailPanel({
 
   const domainStyle = cardData?.domain ? (DOMAIN_COLORS[cardData.domain] || DOMAIN_COLORS.colorless) : null;
   const rarityStyle = cardData?.rarity ? (RARITY_STYLES[cardData.rarity] || RARITY_STYLES.common) : null;
+  const isPendingCard = quantity != null;
 
   const confidenceColor = similarity >= 0.9 ? 'text-green-400 bg-green-400/10'
     : similarity >= 0.85 ? 'text-yellow-400 bg-yellow-400/10'
     : 'text-red-400 bg-red-400/10';
+  const priceLabel = priceRecord ? formatPrice(priceRecord.marketPrice ?? priceRecord.price, priceCurrency, priceExchangeRates) : null;
+  const quickRemoveLabel = quantity > 1 ? 'Remove duplicate' : 'Remove card';
 
   const handleSelectMatch = (matchIdx) => {
     setManualCard(null);
@@ -203,9 +212,19 @@ export default function CardDetailPanel({
               {activeMatch ? activeMatch.name : `Detection #${index + 1}`}
             </p>
             {cardData && (
-              <p className="text-[10px] text-rift-400 truncate">
-                {cardData.set} · #{cardData.collectorNumber}
-              </p>
+              <div className="space-y-1">
+                <p className="text-[10px] text-rift-400 truncate">
+                  {cardData.set} · #{cardData.collectorNumber}
+                </p>
+                {!isPendingCard && priceLabel && (
+                  <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                    <span>{priceLabel}</span>
+                  </div>
+                )}
+                {!isPendingCard && priceRecord?.updatedAt && (
+                  <p className="text-[9px] text-rift-500">Updated {priceRecord.updatedAt}</p>
+                )}
+              </div>
             )}
           </div>
 
@@ -213,6 +232,37 @@ export default function CardDetailPanel({
           {quantity > 1 && (
             <span className="text-[10px] font-mono text-rift-300 bg-rift-700/50 px-1.5 py-0.5 rounded-md flex-shrink-0">
               x{quantity}
+            </span>
+          )}
+
+          {/* Mobile duplicate controls */}
+          {isPendingCard && (onQuickAddDuplicate || onQuickRemoveDuplicate) && (
+            <div className="flex items-center gap-1 flex-shrink-0">
+              {onQuickRemoveDuplicate && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onQuickRemoveDuplicate(); }}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-red-400/20 bg-red-500/10 text-red-300 transition-colors hover:bg-red-500/20 hover:text-red-200"
+                  title={quantity > 1 ? 'Remove duplicate' : 'Remove card'}
+                >
+                  <Minus className="h-3 w-3" />
+                </button>
+              )}
+              {onQuickAddDuplicate && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onQuickAddDuplicate(); }}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-emerald-400/20 bg-emerald-500/10 text-emerald-300 transition-colors hover:bg-emerald-500/20 hover:text-emerald-200"
+                  title="Add duplicate"
+                >
+                  <Plus className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Pending price badge */}
+          {isPendingCard && (
+            <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-500/10 border border-emerald-400/20 px-2 py-0.5 rounded-lg flex-shrink-0 whitespace-nowrap">
+              {priceLabel || '€0.00'}
             </span>
           )}
 
@@ -357,28 +407,63 @@ export default function CardDetailPanel({
                 </p>
               )}
 
-              {/* Confidence bar */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[10px] text-rift-400 uppercase tracking-wider">Confidence</span>
-                  <span className={`text-xs font-bold ${
-                    similarity >= 0.9 ? 'text-green-400' :
-                    similarity >= 0.85 ? 'text-yellow-400' : 'text-red-400'
-                  }`}>
-                    {(similarity * 100).toFixed(1)}%
-                  </span>
+              {isPendingCard ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-xl bg-emerald-500/10 border border-emerald-400/20 px-3 py-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[9px] uppercase tracking-wider text-emerald-200/80">Price</span>
+                      <span className="text-sm font-semibold text-emerald-300">{priceLabel || '€0.00'}</span>
+                    </div>
+                    {priceRecord?.updatedAt && (
+                      <p className="text-[9px] text-emerald-200/60 mt-1">Updated {priceRecord.updatedAt}</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] text-rift-400 uppercase tracking-wider">Confidence</span>
+                      <span className={`text-xs font-bold ${
+                        similarity >= 0.9 ? 'text-green-400' :
+                        similarity >= 0.85 ? 'text-yellow-400' : 'text-red-400'
+                      }`}>
+                        {(similarity * 100).toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-rift-700 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${
+                          similarity >= 0.9 ? 'bg-gradient-to-r from-green-500 to-green-400' :
+                          similarity >= 0.85 ? 'bg-gradient-to-r from-yellow-500 to-yellow-400' :
+                          'bg-gradient-to-r from-red-500 to-red-400'
+                        }`}
+                        style={{ width: `${similarity * 100}%` }}
+                      />
+                    </div>
+                  </div>
                 </div>
-                <div className="h-1.5 rounded-full bg-rift-700 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-500 ${
-                      similarity >= 0.9 ? 'bg-gradient-to-r from-green-500 to-green-400' :
-                      similarity >= 0.85 ? 'bg-gradient-to-r from-yellow-500 to-yellow-400' :
-                      'bg-gradient-to-r from-red-500 to-red-400'
-                    }`}
-                    style={{ width: `${similarity * 100}%` }}
-                  />
+              ) : (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] text-rift-400 uppercase tracking-wider">Confidence</span>
+                    <span className={`text-xs font-bold ${
+                      similarity >= 0.9 ? 'text-green-400' :
+                      similarity >= 0.85 ? 'text-yellow-400' : 'text-red-400'
+                    }`}>
+                      {(similarity * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-rift-700 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-500 ${
+                        similarity >= 0.9 ? 'bg-gradient-to-r from-green-500 to-green-400' :
+                        similarity >= 0.85 ? 'bg-gradient-to-r from-yellow-500 to-yellow-400' :
+                        'bg-gradient-to-r from-red-500 to-red-400'
+                      }`}
+                      style={{ width: `${similarity * 100}%` }}
+                    />
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -585,22 +670,42 @@ export default function CardDetailPanel({
 
           {/* Action buttons */}
           {cardData && (
-            <div className="flex gap-2">
-              <button
-                onClick={() => onAddToScanner({ cardData, quantity: localQuantity, foil: localFoil || foilOnly, promo: localPromo })}
-                className="flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-all btn-primary"
-              >
-                <Plus className="w-4 h-4" />
-                Add to collection
-              </button>
-              {onRemove && (
-                <button
-                  onClick={onRemove}
-                  className="py-2.5 px-4 rounded-xl text-sm font-medium flex items-center justify-center transition-all btn-ghost text-red-400 hover:text-red-300 hover:bg-red-400/10 border border-red-400/20"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+            <div className="space-y-2">
+              {isPendingCard && (onQuickAddDuplicate || onQuickRemoveDuplicate) && (
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={onQuickRemoveDuplicate}
+                    className="py-2 rounded-xl text-xs font-medium flex items-center justify-center gap-2 transition-all bg-rift-700/60 text-rift-200 border border-rift-600/40 hover:bg-rift-600/70 hover:text-rift-100"
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                    {quickRemoveLabel}
+                  </button>
+                  <button
+                    onClick={onQuickAddDuplicate}
+                    className="py-2 rounded-xl text-xs font-medium flex items-center justify-center gap-2 transition-all bg-rift-700/60 text-rift-200 border border-rift-600/40 hover:bg-rift-600/70 hover:text-rift-100"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Add duplicate
+                  </button>
+                </div>
               )}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => onAddToScanner({ cardData, quantity: localQuantity, foil: localFoil || foilOnly, promo: localPromo })}
+                  className="flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-all btn-primary"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add to collection
+                </button>
+                {onRemove && (
+                  <button
+                    onClick={onRemove}
+                    className="py-2.5 px-4 rounded-xl text-sm font-medium flex items-center justify-center transition-all btn-ghost text-red-400 hover:text-red-300 hover:bg-red-400/10 border border-red-400/20"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
             </div>
           )}
 

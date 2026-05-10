@@ -99,9 +99,25 @@
     animation: slideUp 0.3s ease-out forwards;
   }
 
+  .scan-success-card {
+    animation: scanSuccessCard 0.98s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+    transform-origin: center center;
+    will-change: opacity, transform;
+  }
+
+  .scan-success-sweep {
+    animation: scanSuccessSweep 0.74s ease-out forwards;
+    will-change: transform, opacity;
+  }
+
+  .scan-success-badge {
+    animation: scanSuccessBadge 0.98s ease-out forwards;
+    will-change: transform;
+  }
+
   /* Custom range slider - cross-browser compatible */
   .range-slider {
-    @apply flex-1 h-1.5 cursor-pointer;
+    @apply block w-full h-1.5 cursor-pointer;
     -webkit-appearance: none;
     appearance: none;
     background: transparent;
@@ -204,6 +220,93 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes scanSuccessCard {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.78);
+  }
+  14% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.02);
+  }
+  42% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  68% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(0.9);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 30dvh) scale(0.2) rotate(7deg);
+  }
+}
+
+@keyframes scanSuccessSweep {
+  0% {
+    opacity: 0;
+    transform: translateY(-130%);
+  }
+  16% {
+    opacity: 0.95;
+  }
+  76% {
+    opacity: 0.6;
+    transform: translateY(260%);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(330%);
+  }
+}
+
+@keyframes scanSuccessBadge {
+  0%, 18% {
+    transform: scale(0.55);
+  }
+  28% {
+    transform: scale(1.16);
+  }
+  40%, 100% {
+    transform: scale(1);
+  }
+}
+
+@media (min-width: 1024px) {
+  .scan-success-card {
+    animation-name: scanSuccessCardDesktop;
+  }
+
+  @keyframes scanSuccessCardDesktop {
+    0% {
+      opacity: 0;
+      transform: translate(-50%, -50%) scale(0.78);
+    }
+    14% {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1.02);
+    }
+    42% {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1);
+    }
+    68% {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(0.9);
+    }
+    100% {
+      opacity: 0;
+      transform: translate(calc(-50% + 34vw), -52%) scale(0.18) rotate(7deg);
+    }
+  }
+}
+
+@keyframes retrainProgressSweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(240%); }
+}
+
 @keyframes scanLine {
   0% { top: 0; }
   100% { top: 100%; }
@@ -211,4 +314,9 @@
 
 .scan-line {
   animation: scanLine 1.5s linear infinite;
+}
+
+.retrain-progress-indicator {
+  width: 42%;
+  animation: retrainProgressSweep 1.35s ease-in-out infinite;
 }

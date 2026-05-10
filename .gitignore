@@ -1,15 +1,40 @@
-__pycache__/
+# Node / frontend
 node_modules/
-model/backgrounds
-model/cards
-model/dataset
+dist/
+.vite/
+coverage/
+*.log
+*.tmp
+*.swp
+
+# Python / training pipeline
+__pycache__/
+*.py[cod]
+*.pt
+.venv/
 venv/
+model/backgrounds/
+model/cards/
+model/dataset/
+model/runs/
 model/dataset.tar.gz
 model/dataset.tar.gz.sha256
 model/riftbound.db
-model/pictures
-model/runs
-public/*
-!public/images
+model/pictures/
+
+# Generated frontend/model assets
+public/cards/
+public/card-hashes.json
+public/models/
+release-assets/*.msi
+
+# Tauri / Rust build output
+src-tauri/target/
+src-tauri/gen/
+
+# OS / editor noise
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
 nul
-dist/
