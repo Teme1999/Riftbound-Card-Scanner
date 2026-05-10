@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Riftbound Scanner",
+  "version": "1.1.0",
+  "identifier": "com.teme1999.riftboundscanner",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "https://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Riftbound Scanner",
+        "width": 1280,
+        "height": 900,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "withGlobalTauri": false,
+    "security": {
+      "capabilities": ["main-capability"],
+      "csp": {
+        "default-src": "'self' customprotocol: asset:",
+        "connect-src": "'self' asset: http://asset.localhost ipc: http://ipc.localhost https://raw.githubusercontent.com https://www.ecb.europa.eu",
+        "font-src": "'self' data:",
+        "img-src": "'self' asset: http://asset.localhost blob: data:",
+        "script-src": "'self' 'wasm-unsafe-eval'",
+        "style-src": "'self' 'unsafe-inline'",
+        "worker-src": "'self' blob:"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["../public/images/riftboundscanner.ico"],
+    "targets": ["msi"]
+  }
+}
