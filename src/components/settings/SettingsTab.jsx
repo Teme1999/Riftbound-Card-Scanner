@@ -1,9 +1,11 @@
 import React, { useRef } from 'react';
-import { Shield, Sparkles, RotateCcw, Info, ExternalLink, Cpu, Download, Database, Upload, Search, RefreshCcw, Camera } from 'lucide-react';
+import { Shield, Sparkles, RotateCcw, Info, ExternalLink, Cpu, Download, Database, Search, RefreshCcw, Camera } from 'lucide-react';
 import { CONDITIONS, LANGUAGES } from '../../data/sampleCards.js';
 import { EXPORT_FORMAT_OPTIONS } from '../../lib/csvExporter.js';
 import { openDesktopUrl } from '../../lib/desktopBridge.js';
 import { FALLBACK_EXCHANGE_RATE_DATE, FALLBACK_ECB_EUR_RATES, PRICE_CURRENCY_OPTIONS, normalizeExchangeRates, normalizePriceCurrency } from '../../lib/priceFormat.js';
+
+const APP_VERSION_LABEL = __APP_RELEASE_VERSION__ || __APP_VERSION__;
 
 export default function SettingsTab({
   batchDefaults,
@@ -18,7 +20,12 @@ export default function SettingsTab({
   onUpdateCardDatabase,
   onUpdatePriceData,
   maintenanceBusy = false,
+  appUpdateState = null,
+  onCheckAppUpdate,
+  onInstallAppUpdate,
   cardDatabaseLabel = 'Bundled database',
+  cardDatabaseUpdatedAt = null,
+  cardDatabaseSetCoverage = { label: 'No sets loaded', fullLabel: 'No sets loaded', count: 0 },
   priceCacheLabel = 'No cached price data yet',
   priceCacheUpdatedAt = null,
   priceCurrency = 'EUR',
@@ -47,6 +54,10 @@ export default function SettingsTab({
     }
   })();
 
+  const priceConversionLabel = normalizedPriceCurrency === 'EUR'
+    ? `Base currency: EUR${priceExchangeRateFallback ? ' (fallback FX data)' : ''} from ${priceExchangeRateDate || FALLBACK_EXCHANGE_RATE_DATE}`
+    : `Display converts using ${priceExchangeRateFallback ? 'fallback' : 'ECB'} rates from ${priceExchangeRateDate || FALLBACK_EXCHANGE_RATE_DATE}: 1 EUR = ${selectedExchangeRate} ${normalizedPriceCurrency}`;
+
   const priceCacheUpdatedAtLabel = priceCacheUpdatedAt
     ? (() => {
         const parsed = new Date(priceCacheUpdatedAt);
@@ -55,6 +66,35 @@ export default function SettingsTab({
           : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(parsed);
       })()
     : 'Never updated';
+
+  const cardDatabaseUpdatedAtLabel = cardDatabaseUpdatedAt
+    ? (() => {
+        const parsed = new Date(cardDatabaseUpdatedAt);
+        return Number.isNaN(parsed.getTime())
+          ? cardDatabaseUpdatedAt
+          : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(parsed);
+      })()
+    : 'Never synced';
+
+  const appUpdateStatus = appUpdateState?.status || 'idle';
+  const appUpdateIsBusy = ['checking', 'downloading', 'installing', 'relaunching'].includes(appUpdateStatus);
+  const appUpdateAvailable = appUpdateStatus === 'available' && appUpdateState?.update;
+  const appUpdateMessage = appUpdateState?.message || 'App update checks are available in the desktop build.';
+  const appUpdateProgress = appUpdateState?.progress?.percent;
+  const appUpdateProgressLabel = Number.isFinite(appUpdateProgress) ? `${appUpdateProgress}%` : null;
+  const appUpdateCheckedAtLabel = appUpdateState?.checkedAt
+    ? (() => {
+        const parsed = new Date(appUpdateState.checkedAt);
+        return Number.isNaN(parsed.getTime())
+          ? appUpdateState.checkedAt
+          : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(parsed);
+      })()
+    : 'Not checked this session';
+  const appUpdateStatusTone = appUpdateStatus === 'available'
+    ? 'border-gold-400/30 bg-gold-500/10 text-gold-200'
+    : appUpdateStatus === 'error'
+      ? 'border-red-400/30 bg-red-500/10 text-red-200'
+      : 'border-rift-600/20 bg-rift-950/40 text-rift-200';
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto pb-20">
@@ -67,6 +107,27 @@ export default function SettingsTab({
             Runtime: <span className="text-rift-100">{runtimeLabel}</span>
           </div>
         </div>
+
+        <section className="rounded-2xl border border-gold-500/20 bg-gradient-to-br from-gold-500/10 via-rift-800/80 to-rift-900/80 p-5 space-y-3">
+          <h2 className="text-sm font-semibold text-rift-100 flex items-center gap-2">
+            <Info className="w-4 h-4 text-gold-400" />
+            How To Use Riftbound Scanner
+          </h2>
+          <div className="space-y-2 text-xs leading-relaxed text-rift-300">
+            <p>
+              1. Open <span className="text-rift-100 font-medium">Scan</span> to use your camera or upload a card image.
+            </p>
+            <p>
+              2. Confirm the detected card details, then add it to your pending list or collection.
+            </p>
+            <p>
+              3. Review everything in <span className="text-rift-100 font-medium">Collection</span>, where you can search, edit, and export your cards.
+            </p>
+            <p>
+              4. Use this page to choose your camera, tune scan sensitivity, set defaults, and refresh card or price data.
+            </p>
+          </div>
+        </section>
 
         <section className="rounded-2xl bg-rift-800/60 border border-rift-600/20 p-5 space-y-4">
           <h2 className="text-sm font-semibold text-rift-100 flex items-center gap-2">
@@ -284,6 +345,10 @@ export default function SettingsTab({
           </div>
 
           <div className="rounded-xl border border-rift-600/20 bg-rift-950/40 px-3 py-2 text-xs text-rift-400">
+            Currency conversion: <span className="text-rift-200">{priceConversionLabel}</span>
+          </div>
+
+          <div className="rounded-xl border border-rift-600/20 bg-rift-950/40 px-3 py-2 text-xs text-rift-400">
             Last price cache update: <span className="text-rift-200">{priceCacheUpdatedAtLabel}</span>
           </div>
 
@@ -295,6 +360,65 @@ export default function SettingsTab({
             <Download className="w-4 h-4" />
             Press to update
           </button>
+        </section>
+
+        <section className="rounded-2xl bg-rift-800/60 border border-rift-600/20 p-5 space-y-4">
+          <h2 className="text-sm font-semibold text-rift-100 flex items-center gap-2">
+            <RefreshCcw className="w-4 h-4 text-gold-400" />
+            App Updates
+          </h2>
+          <p className="text-xs text-rift-400 leading-relaxed">
+            Checks the signed GitHub Release feed and installs newer Windows desktop builds in place.
+          </p>
+
+          <div className={`rounded-xl border px-3 py-2 text-xs leading-relaxed ${appUpdateStatusTone}`}>
+            {appUpdateMessage}
+          </div>
+
+          <div className="rounded-xl border border-rift-600/20 bg-rift-950/40 px-3 py-2 text-xs text-rift-400">
+            Last update check: <span className="text-rift-200">{appUpdateCheckedAtLabel}</span>
+          </div>
+
+          {appUpdateAvailable && (
+            <div className="rounded-xl border border-gold-400/20 bg-rift-900/40 px-3 py-2 text-xs text-rift-400">
+              Available version: <span className="text-gold-300">v{appUpdateState.update.version}</span>
+            </div>
+          )}
+
+          {appUpdateIsBusy && (
+            <div className="space-y-2">
+              <div className="h-2 overflow-hidden rounded-full bg-rift-700">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-gold-500 to-gold-400 transition-all duration-300"
+                  style={{ width: appUpdateProgressLabel || (appUpdateStatus === 'checking' ? '35%' : '65%') }}
+                />
+              </div>
+              <div className="text-right text-[10px] text-rift-500">
+                {appUpdateProgressLabel || (appUpdateStatus === 'checking' ? 'Checking' : 'Working')}
+              </div>
+            </div>
+          )}
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => onCheckAppUpdate?.()}
+              className="btn-ghost w-full rounded-xl py-3 text-sm flex items-center justify-center gap-2"
+              disabled={maintenanceBusy || appUpdateIsBusy}
+            >
+              <RefreshCcw className="w-4 h-4" />
+              Check for updates
+            </button>
+            <button
+              type="button"
+              onClick={() => onInstallAppUpdate?.()}
+              className="btn-primary w-full rounded-xl py-3 text-sm flex items-center justify-center gap-2"
+              disabled={maintenanceBusy || appUpdateIsBusy || !appUpdateAvailable}
+            >
+              <Download className="w-4 h-4" />
+              Install update
+            </button>
+          </div>
         </section>
 
         <section className="rounded-2xl bg-rift-800/60 border border-rift-600/20 p-5 space-y-4">
@@ -313,7 +437,7 @@ export default function SettingsTab({
                 Matcher database
               </div>
               <p className="text-[11px] text-rift-400 leading-relaxed">
-                Press <span className="text-rift-200 font-medium">Update Card Database</span> after you export or import a new <span className="text-gold-300">card-hashes.json</span>. For a new DLC drop, this is usually the only step you need.
+                Press <span className="text-rift-200 font-medium">Update Card Database</span> to scrape Riot's card gallery, regenerate <span className="text-gold-300">card-hashes.json</span>, and refresh the matcher. For a new DLC drop, this is usually the only step you need.
               </p>
 
               <div className="rounded-xl border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200/90 leading-relaxed">
@@ -327,13 +451,24 @@ export default function SettingsTab({
                 Current source: <span className="text-rift-200">{cardDatabaseLabel}</span>
               </div>
 
+              <div className="rounded-xl border border-rift-600/20 bg-rift-950/40 px-3 py-2 text-xs text-rift-400">
+                Last sync: <span className="text-rift-200">{cardDatabaseUpdatedAtLabel}</span>
+              </div>
+
+              <div
+                className="rounded-xl border border-rift-600/20 bg-rift-950/40 px-3 py-2 text-xs text-rift-400"
+                title={cardDatabaseSetCoverage.fullLabel}
+              >
+                Sets in database ({cardDatabaseSetCoverage.count}): <span className="text-rift-200">{cardDatabaseSetCoverage.label}</span>
+              </div>
+
               <button
                 onClick={onUpdateCardDatabase}
                 className="btn-primary w-full rounded-xl py-3 text-sm flex items-center justify-center gap-2"
                 disabled={maintenanceBusy}
-                title="Press this when you have a newer card-hashes.json to load. It refreshes the matcher database so the scanner can recognize updated cards."
+                title="Scrapes the Riot card gallery, regenerates card-hashes.json, and refreshes the matcher database."
               >
-                <Upload className="w-4 h-4" />
+                <RefreshCcw className="w-4 h-4" />
                 Update Card Database
               </button>
             </div>
@@ -429,7 +564,7 @@ export default function SettingsTab({
             />
             <div>
               <p className="text-sm font-display font-bold text-gold-400">Riftbound Scanner</p>
-              <p className="text-[10px] text-rift-500">v1.1.0</p>
+              <p className="text-[10px] text-rift-500">v{APP_VERSION_LABEL}</p>
             </div>
           </div>
 
@@ -439,7 +574,7 @@ export default function SettingsTab({
 
           <div className="p-3 rounded-xl bg-rift-700/40 border border-rift-600/20">
             <p className="text-[10px] text-rift-500 leading-relaxed">
-              Runs local scanner and collection data on this device. Price refresh is the only in-app network update action.
+              Runs local scanner and collection data on this device. Price refresh and app update checks are the only in-app network update actions.
             </p>
           </div>
 

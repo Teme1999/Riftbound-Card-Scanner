@@ -6,6 +6,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 export function useCamera({ deviceId = '' } = {}) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
+  const cameraConfigRef = useRef({ deviceId, facingMode: 'environment' });
   const [isActive, setIsActive] = useState(false);
   const [error, setError] = useState(null);
   const [facingMode, setFacingMode] = useState('environment'); // 'user' | 'environment'
@@ -135,9 +136,13 @@ export function useCamera({ deviceId = '' } = {}) {
     setFacingMode(newMode);
   }, [facingMode]);
 
-  // Restart camera when facing mode changes
+  // Restart camera only when an active stream's selected camera changes.
   useEffect(() => {
-    if (isActive) {
+    const previous = cameraConfigRef.current;
+    const changed = previous.deviceId !== deviceId || previous.facingMode !== facingMode;
+    cameraConfigRef.current = { deviceId, facingMode };
+
+    if (isActive && changed) {
       startCamera();
     }
   }, [deviceId, facingMode, isActive, startCamera]);

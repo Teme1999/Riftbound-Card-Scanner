@@ -137,34 +137,166 @@ jobs:
           Copy-Item $modelSource 'public/models' -Recurse -Force
           Copy-Item $cardSource 'public/cards' -Recurse -Force
 
-      - name: Build Windows installer
+      - name: Verify updater signing secret
         if: steps.existing_release.outputs.exists != 'true'
         shell: pwsh
-        run: npm run desktop:build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw 'TAURI_SIGNING_PRIVATE_KEY must be set so Tauri can sign updater artifacts.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
+            throw 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD must be set for the configured updater signing key.'
+          }
 
-      - name: Resolve installer path
+      - name: Build Windows installers
         if: steps.existing_release.outputs.exists != 'true'
-        id: installer
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD.Trim()
+          npm run desktop:build
+
+      - name: Resolve installer artifacts
+        if: steps.existing_release.outputs.exists != 'true'
+        id: installers
         shell: pwsh
         run: |
+          $releaseDir = Join-Path $env:RUNNER_TEMP 'release-assets'
+          if (Test-Path $releaseDir) {
+            Remove-Item $releaseDir -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+
           $msi = Get-ChildItem 'src-tauri/target/release/bundle/msi' -File -Filter *.msi |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
           if (-not $msi) {
             throw 'MSI bundle was not produced.'
           }
-          $releaseFileName = "Riftbound Scanner_${{ steps.version.outputs.release_version }}_x64_en-US.msi"
-          $releaseFilePath = Join-Path $msi.DirectoryName $releaseFileName
-          Copy-Item $msi.FullName $releaseFilePath -Force
-          "path=$releaseFilePath" >> $env:GITHUB_OUTPUT
-          "name=$releaseFileName" >> $env:GITHUB_OUTPUT
 
-      - name: Upload installer artifact
+          $nsis = Get-ChildItem 'src-tauri/target/release/bundle/nsis' -File -Filter *.exe |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $nsis) {
+            throw 'NSIS bundle was not produced.'
+          }
+
+          $msiReleaseFileName = "Riftbound Scanner_${{ steps.version.outputs.release_version }}_x64_en-US.msi"
+          $nsisReleaseFileName = "Riftbound Scanner_${{ steps.version.outputs.release_version }}_x64-setup.exe"
+          $msiReleaseFilePath = Join-Path $releaseDir $msiReleaseFileName
+          $nsisReleaseFilePath = Join-Path $releaseDir $nsisReleaseFileName
+
+          Copy-Item $msi.FullName $msiReleaseFilePath -Force
+          Copy-Item $nsis.FullName $nsisReleaseFilePath -Force
+
+          $bundleRoot = 'src-tauri/target/release/bundle'
+          $signedCandidates = Get-ChildItem $bundleRoot -Recurse -File |
+            Where-Object {
+              $_.Name -notlike '*.sig' -and
+              ($_.Extension -in @('.exe', '.msi', '.zip')) -and
+              (Test-Path "$($_.FullName).sig")
+            }
+
+          if (-not $signedCandidates) {
+            throw 'No signed updater artifacts were produced. Check TAURI_SIGNING_PRIVATE_KEY and createUpdaterArtifacts.'
+          }
+
+          function Select-UpdaterArtifact {
+            param(
+              [Parameter(Mandatory = $true)] [object[]] $Candidates,
+              [Parameter(Mandatory = $true)] [string] $Kind
+            )
+
+            $matches = $Candidates | Where-Object {
+              if ($Kind -eq 'nsis') {
+                $_.DirectoryName -match '[\\/]nsis($|[\\/])' -or $_.Name -like '*setup.exe*'
+              } else {
+                $_.DirectoryName -match '[\\/]msi($|[\\/])' -or $_.Name -like '*.msi' -or $_.Name -like '*.msi.zip'
+              }
+            }
+
+            $matches |
+              Sort-Object @{ Expression = { if ($_.Extension -eq '.zip') { 0 } else { 1 } } }, @{ Expression = 'LastWriteTime'; Descending = $true } |
+              Select-Object -First 1
+          }
+
+          function Copy-UpdaterArtifact {
+            param(
+              [Parameter(Mandatory = $true)] [System.IO.FileInfo] $Artifact,
+              [Parameter(Mandatory = $true)] [string] $Kind
+            )
+
+            if ($Kind -eq 'nsis') {
+              $fileName = if ($Artifact.Extension -eq '.zip') {
+                "Riftbound Scanner_${{ steps.version.outputs.release_version }}_x64-setup.exe.zip"
+              } else {
+                $nsisReleaseFileName
+              }
+            } else {
+              $fileName = if ($Artifact.Extension -eq '.zip') {
+                "Riftbound Scanner_${{ steps.version.outputs.release_version }}_x64_en-US.msi.zip"
+              } else {
+                $msiReleaseFileName
+              }
+            }
+
+            $filePath = Join-Path $releaseDir $fileName
+            Copy-Item $Artifact.FullName $filePath -Force
+            Copy-Item "$($Artifact.FullName).sig" "$filePath.sig" -Force
+
+            $signature = (Get-Content "$filePath.sig" -Raw -Encoding UTF8).Trim()
+            $encodedName = [System.Uri]::EscapeDataString($fileName)
+            [ordered]@{
+              signature = $signature
+              url = "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/$encodedName"
+            }
+          }
+
+          $platforms = [ordered]@{}
+          $nsisUpdater = Select-UpdaterArtifact -Candidates $signedCandidates -Kind 'nsis'
+          $msiUpdater = Select-UpdaterArtifact -Candidates $signedCandidates -Kind 'msi'
+
+          if ($nsisUpdater) {
+            $nsisEntry = Copy-UpdaterArtifact -Artifact $nsisUpdater -Kind 'nsis'
+            $platforms['windows-x86_64-nsis'] = $nsisEntry
+            $platforms['windows-x86_64'] = $nsisEntry
+          }
+
+          if ($msiUpdater) {
+            $msiEntry = Copy-UpdaterArtifact -Artifact $msiUpdater -Kind 'msi'
+            $platforms['windows-x86_64-msi'] = $msiEntry
+            if (-not $platforms.Contains('windows-x86_64')) {
+              $platforms['windows-x86_64'] = $msiEntry
+            }
+          }
+
+          if ($platforms.Count -eq 0) {
+            throw 'No Windows updater platform entries could be generated.'
+          }
+
+          $latestJson = [ordered]@{
+            version = '${{ steps.version.outputs.version }}'
+            notes = 'See the GitHub release notes for this version.'
+            pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            platforms = $platforms
+          } | ConvertTo-Json -Depth 8
+          Set-Content -Path (Join-Path $releaseDir 'latest.json') -Value $latestJson -Encoding UTF8
+
+          "dir=$releaseDir" >> $env:GITHUB_OUTPUT
+          "artifact_name=riftbound-installers-${{ steps.version.outputs.release_version }}" >> $env:GITHUB_OUTPUT
+          "files=$releaseDir/*" >> $env:GITHUB_OUTPUT
+
+      - name: Upload installer artifacts
         if: steps.existing_release.outputs.exists != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.installer.outputs.name }}
-          path: ${{ steps.installer.outputs.path }}
+          name: ${{ steps.installers.outputs.artifact_name }}
+          path: ${{ steps.installers.outputs.dir }}
 
       - name: Create GitHub release
         if: steps.existing_release.outputs.exists != 'true'
@@ -174,4 +306,4 @@ jobs:
           name: ${{ steps.version.outputs.release_version }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
-          files: ${{ steps.installer.outputs.path }}
+          files: ${{ steps.installers.outputs.files }}

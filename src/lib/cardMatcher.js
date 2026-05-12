@@ -3,8 +3,9 @@
  * Used by both camera mode (useCardDetection) and upload mode (ScanTab).
  */
 
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { loadMatcherDatabase, saveMatcherDatabase } from './indexedDB.js';
-import { resolveAppUrl } from './runtime.js';
+import { isDesktopRuntime, resolveAppUrl } from './runtime.js';
 
 const HASHES_URL = resolveAppUrl(`/card-hashes.json?v=${__BUILD_TIME__}`);
 const isDevelopment = import.meta.env.DEV;
@@ -12,6 +13,31 @@ const debugLog = (...args) => {
   if (isDevelopment) {
     console.log(...args);
   }
+};
+
+const summarizeMatcherSets = (cards = []) => {
+  const bySet = new Map();
+
+  for (const card of cards) {
+    const setCode = String(card?.set || '').trim().toUpperCase();
+    if (!setCode || bySet.has(setCode)) continue;
+
+    const setName = String(card?.setName || '').trim();
+    bySet.set(setCode, {
+      value: setCode,
+      label: setName ? `${setCode} · ${setName}` : setCode,
+    });
+  }
+
+  const labels = [...bySet.values()]
+    .sort((left, right) => left.value.localeCompare(right.value))
+    .map((entry) => entry.label);
+
+  return {
+    count: labels.length,
+    fullLabel: labels.length > 0 ? labels.join(', ') : 'No sets loaded',
+    label: labels.length > 0 ? labels.slice(0, 6).join(', ') : 'No sets loaded',
+  };
 };
 
 // Artwork crop region (portrait card) — excludes frame, name bar, text/stats
@@ -27,6 +53,30 @@ const ART_RIGHT = 0.95;
  */
 export function getCardImageUrl(cardId) {
   return `/cards/${cardId}.webp`;
+}
+
+export function resolveCardImageSource(source, cardId = null) {
+  const fallback = cardId ? getCardImageUrl(cardId) : '';
+  const candidate = source || fallback;
+  if (!candidate) return '';
+
+  if (/^https?:/i.test(candidate)) {
+    return fallback ? resolveAppUrl(fallback) : '';
+  }
+
+  if (/^(data:|blob:|asset:|tauri:)/i.test(candidate)) {
+    return candidate;
+  }
+
+  if (candidate.startsWith('/')) {
+    return resolveAppUrl(candidate);
+  }
+
+  if (isDesktopRuntime()) {
+    return convertFileSrc(candidate);
+  }
+
+  return candidate;
 }
 
 export function normalizeScanSetFilter(setFilter) {
@@ -66,18 +116,23 @@ class CardMatcher {
     this.ready = false;
     this._tmpCanvas = null;
     this.databaseSource = 'bundled';
+    this.databaseUpdatedAt = null;
+    this.databaseSetCoverage = summarizeMatcherSets();
   }
 
   async initialize() {
     this.ready = false;
     this.cards = [];
     this.databaseSource = 'bundled';
+    this.databaseUpdatedAt = null;
+    this.databaseSetCoverage = summarizeMatcherSets();
 
     try {
       const localDatabase = await loadMatcherDatabase();
       if (localDatabase) {
-        this._applyDatabase(localDatabase);
+        this._applyDatabase(localDatabase.database);
         this.databaseSource = 'local';
+        this.databaseUpdatedAt = localDatabase.updatedAt || null;
         debugLog(`[CardMatcher] Loaded ${this.cards.length} cards from local database (${this.gridSize}x${this.gridSize} grid)`);
         return;
       }
@@ -110,6 +165,7 @@ class CardMatcher {
       for (let i = 0; i < f.length; i++) normSq += f[i] * f[i];
       return { ...card, f, norm: Math.sqrt(normSq) };
     });
+    this.databaseSetCoverage = summarizeMatcherSets(this.cards);
     this.ready = true;
   }
 
@@ -119,9 +175,10 @@ class CardMatcher {
       cards: database.cards || [],
     };
 
-    await saveMatcherDatabase(normalized);
+    const savedRecord = await saveMatcherDatabase(normalized);
     this._applyDatabase(normalized);
     this.databaseSource = 'local';
+    this.databaseUpdatedAt = savedRecord.updatedAt || null;
     debugLog(`[CardMatcher] Database updated locally (${this.cards.length} cards)`);
   }
 
@@ -135,14 +192,18 @@ class CardMatcher {
     if (!this.ready || this.cards.length === 0) return null;
 
     const candidateCards = filterCardsBySet(this.cards, options.setFilter);
+    if (candidateCards.length === 0) return null;
+
     const art = this._cropArtwork(cropCanvas);
     const features = this._computeColorGrid(art);
+    const featureNorm = this._vectorNorm(features);
+    if (featureNorm <= 0) return null;
 
     let bestCard = null;
     let bestSim = -1;
     let secondBestSim = -1;
     for (const card of candidateCards) {
-      const sim = this._cosineSimilarity(features, card.f);
+      const sim = this._cosineSimilarity(features, card.f, featureNorm, card.norm);
       if (sim > bestSim) {
         secondBestSim = bestSim;
         bestSim = sim;
@@ -216,14 +277,20 @@ class CardMatcher {
     return features;
   }
 
-  _cosineSimilarity(a, b) {
-    let dot = 0, normA = 0, normB = 0;
+  _vectorNorm(vector) {
+    let normSq = 0;
+    for (let i = 0; i < vector.length; i++) {
+      normSq += vector[i] * vector[i];
+    }
+    return Math.sqrt(normSq);
+  }
+
+  _cosineSimilarity(a, b, normA, normB) {
+    let dot = 0;
     for (let i = 0; i < a.length; i++) {
       dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
     }
-    const denom = Math.sqrt(normA) * Math.sqrt(normB);
+    const denom = normA * normB;
     return denom > 0 ? dot / denom : 0;
   }
 }

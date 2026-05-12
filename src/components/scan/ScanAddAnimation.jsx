@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { CheckCircle2, ScanLine, Sparkles } from 'lucide-react';
 import { DOMAIN_COLORS } from '../../data/sampleCards.js';
 import { formatPrice } from '../../lib/priceFormat.js';
-import { getCardImageUrl } from '../../lib/cardMatcher.js';
+import { getCardImageUrl, resolveCardImageSource } from '../../lib/cardMatcher.js';
 
 export default function ScanAddAnimation({ cardData, priceRecord, priceCurrency = 'EUR', priceExchangeRates }) {
   const [imageError, setImageError] = useState(false);
@@ -31,7 +31,7 @@ export default function ScanAddAnimation({ cardData, priceRecord, priceCurrency 
               </div>
             ) : (
               <img
-                src={getCardImageUrl(cardData.id)}
+                src={resolveCardImageSource(cardData.imageUrl, cardData.id)}
                 alt={cardData.name}
                 className="h-full w-full object-cover"
                 onError={() => setImageError(true)}

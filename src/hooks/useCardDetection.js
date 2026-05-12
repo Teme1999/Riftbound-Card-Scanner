@@ -48,6 +48,7 @@ export function useCardDetection({ scanSetFilter = 'all' } = {}) {
       console.error('[Detection] Init failed:', error);
       setDetectorState(DetectorState.ERROR);
       setDetectorMode('error');
+      throw error;
     }
   }, []);
 
@@ -93,6 +94,7 @@ export function useCardDetection({ scanSetFilter = 'all' } = {}) {
       tags: matcherCard.tags,
       illustrator: matcherCard.illustrator,
       text: matcherCard.text,
+      imageUrl: matcherCard.imageUrl,
     };
   }
 

@@ -1,8 +1,10 @@
 # Notices
 
-This project is an independent non-commercial fork maintained by Teme1999. It
-is not affiliated with, endorsed by, sponsored by, or connected to Riot Games or
-the upstream project maintainer.
+The source code in this repository is licensed under MIT. That license does not
+grant any rights to Riot Games trademarks, branding, artwork, or other
+third-party intellectual property. This project is independent and is not
+affiliated with, endorsed by, sponsored by, or connected to Riot Games or the
+upstream project maintainer.
 
 ## Upstream MIT Notice
 
@@ -56,4 +58,7 @@ imported; bundled fallback rates are used if that request fails.
 
 Best-effort provenance notes for training helper assets live in
 `model/ASSET_NOTICES.md`. Those files are used only for synthetic detector
-training and are not part of the app runtime.
+training and are not part of the app runtime or Windows installer payload.
+Because they are present in the source tree, verify their source and
+redistribution rights before publishing source archives or training bundles that
+include those helper assets.

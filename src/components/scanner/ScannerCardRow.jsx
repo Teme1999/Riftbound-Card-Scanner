@@ -1,6 +1,7 @@
 import React, { memo } from 'react';
 import { Trash2, Plus, Minus, Sparkles } from 'lucide-react';
 import { CONDITIONS, LANGUAGES, DOMAIN_COLORS, RARITY_STYLES, isFoilOnly } from '../../data/sampleCards.js';
+import { resolveCardImageSource } from '../../lib/cardMatcher.js';
 import { formatPrice } from '../../lib/priceFormat.js';
 
 const ScannerCardRow = memo(function ScannerCardRow({ card, index, onUpdate, onRemove, onSplit, priceRecord, priceCurrency = 'EUR', priceExchangeRates }) {
@@ -21,7 +22,7 @@ const ScannerCardRow = memo(function ScannerCardRow({ card, index, onUpdate, onR
         {/* Card thumbnail */}
         <div className="w-12 h-16 rounded-lg overflow-hidden bg-rift-800 border border-rift-600/30 flex-shrink-0">
           <img
-            src={`/cards/${cardData.id}.webp`}
+            src={resolveCardImageSource(cardData.imageUrl, cardData.id)}
             alt={cardData.name}
             className="w-full h-full object-cover"
             loading="lazy"

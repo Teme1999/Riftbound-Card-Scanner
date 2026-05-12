@@ -1,8 +1,9 @@
 # Training Asset Notices
 
 The files in `model/textures/` and `model/distractors/` are helper assets used
-to generate synthetic detector training scenes. They are not shipped as runtime
-application assets.
+to generate synthetic detector training scenes. They are source-tree training
+aids only and are not shipped as runtime application assets or Windows installer
+payloads.
 
 ## Textures
 
@@ -27,6 +28,7 @@ files such as `hands1.png`, `keyboard1.png`, `monitor1.png`, and `mouse1.jpeg`
 appear to be local helper photos or cutouts. Provenance for these files is not
 fully documented in this repository.
 
-Before redistributing a public release that includes these helper assets, verify
-the source and rights for each distractor image or replace them with assets that
-have explicit redistribution terms.
+Before redistributing source archives, training bundles, or any other release
+artifact that includes these helper assets, verify the source and rights for each
+distractor image or replace them with assets that have explicit redistribution
+terms.

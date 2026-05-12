@@ -1,8 +1,14 @@
 {
   "name": "riftbound-scanner",
   "private": true,
-  "version": "26.5.10-1",
-  "releaseVersion": "2026.05.10.1",
+  "version": "26.5.12-1",
+  "releaseVersion": "2026.05.12.1",
+  "license": "MIT",
+  "homepage": "https://github.com/Teme1999/Riftbound-Card-Scanner",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Teme1999/Riftbound-Card-Scanner.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,7 +22,8 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
-    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "lucide-react": "^0.263.1",
     "onnxruntime-web": "^1.26.0",
     "react": "^18.2.0",

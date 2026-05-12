@@ -12,10 +12,11 @@ import { useCardDetection } from './hooks/useCardDetection.js';
 import { useAutoScan } from './hooks/useAutoScan.js';
 import { downloadCSV, validateForExport, EXPORT_FORMATS } from './lib/csvExporter.js';
 import { getMatcher } from './lib/cardMatcher.js';
-import { buildScanSetOptions } from './lib/scanSets.js';
+import { buildScanSetOptions, summarizeScanSetCoverage } from './lib/scanSets.js';
 import { isDesktopRuntime } from './lib/runtime.js';
-import { invokeDesktopCommand, openDesktopFileDialog } from './lib/desktopBridge.js';
-import { fetchPriceSnapshotCsvFromGithub, importPriceSnapshotCsv, loadStoredPriceMeta, PRICE_SOURCE_LABEL, PRICE_SOURCE_URL } from './lib/priceSync.js';
+import { invokeDesktopCommand } from './lib/desktopBridge.js';
+import { checkForAppUpdate, downloadAndInstallAppUpdate, relaunchApp } from './lib/appUpdater.js';
+import { fetchExchangeRatesFromEcb, fetchPriceSnapshotCsvFromGithub, importPriceSnapshotCsv, loadStoredPriceMeta, PRICE_SOURCE_LABEL, PRICE_SOURCE_URL } from './lib/priceSync.js';
 import { getPriceRecords } from './lib/indexedDB.js';
 import { FALLBACK_EXCHANGE_RATE_DATE, normalizeExchangeRates, normalizePriceCurrency } from './lib/priceFormat.js';
 import { isFoilOnly } from './data/sampleCards.js';
@@ -24,6 +25,7 @@ import { isFoilOnly } from './data/sampleCards.js';
 const STORAGE_KEYS = {
   SCANNED_CARDS: 'riftbound_scanned_cards',
   PENDING_CARDS: 'riftbound_pending_cards',
+  RECENT_PENDING_SCAN_EVENTS: 'riftbound_recent_pending_scan_events',
   BATCH_DEFAULTS: 'riftbound_batch_defaults',
   MODEL_PREFERENCE: 'riftbound_model_preference',
   EXPORT_FORMAT: 'riftbound_export_format',
@@ -33,6 +35,15 @@ const STORAGE_KEYS = {
 };
 
 const SCAN_ADD_ANIMATION_MS = 980;
+const APP_UPDATE_IDLE_STATE = {
+  status: 'idle',
+  update: null,
+  message: 'App update checks are available in the desktop build.',
+  progress: null,
+  checkedAt: null,
+  error: null,
+};
+const APP_UPDATE_BUSY_STATUSES = new Set(['checking', 'downloading', 'installing', 'relaunching']);
 
 function saveToStorage(key, data) {
   try {
@@ -64,6 +75,9 @@ export default function App() {
   // Scanning
   const [pendingCards, setPendingCards] = useState(() =>
     loadFromStorage(STORAGE_KEYS.PENDING_CARDS, [])
+  );
+  const [recentPendingScanEvents, setRecentPendingScanEvents] = useState(() =>
+    loadFromStorage(STORAGE_KEYS.RECENT_PENDING_SCAN_EVENTS, [])
   );
   const [scannedCards, setScannedCards] = useState(() =>
     loadFromStorage(STORAGE_KEYS.SCANNED_CARDS, [])
@@ -109,6 +123,9 @@ export default function App() {
   const [scanSetOptions, setScanSetOptions] = useState([{ value: 'all', label: 'All sets' }]);
 
   const [priceSyncBusy, setPriceSyncBusy] = useState(false);
+  const [cardDatabaseBusy, setCardDatabaseBusy] = useState(false);
+  const [appUpdateState, setAppUpdateState] = useState(APP_UPDATE_IDLE_STATE);
+  const [updateTask, setUpdateTask] = useState(null);
   const [priceSyncMeta, setPriceSyncMeta] = useState(null);
   const [priceRecords, setPriceRecords] = useState([]);
   const [priceCurrency, setPriceCurrency] = useState(() =>
@@ -128,6 +145,16 @@ export default function App() {
   const priceExchangeRates = normalizeExchangeRates(priceSyncMeta?.exchangeRates || (priceSyncMeta?.usdPerEurRate ? { USD: priceSyncMeta.usdPerEurRate } : null));
   const priceExchangeRateDate = priceSyncMeta?.exchangeRateDate || priceSyncMeta?.usdPerEurRateDate || FALLBACK_EXCHANGE_RATE_DATE;
   const priceExchangeRateFallback = priceSyncMeta ? Boolean(priceSyncMeta.exchangeRateFallback ?? priceSyncMeta.usdPerEurRateFallback) : true;
+  const yieldToPaint = useCallback(() => new Promise((resolve) => requestAnimationFrame(() => resolve())), []);
+  const matcher = getMatcher();
+  const cardDatabaseSourceLabel = detection.detectorState === 'ready'
+    ? (matcher.databaseSource === 'local' ? 'Imported locally' : 'Bundled file')
+    : 'Unknown';
+  const cardDatabaseUpdatedAt = detection.detectorState === 'ready' ? matcher.databaseUpdatedAt : null;
+  const cardDatabaseSetCoverage = detection.detectorState === 'ready'
+    ? summarizeScanSetCoverage(matcher.cards)
+    : { count: 0, fullLabel: 'Unknown', label: 'Unknown' };
+  const appUpdateBusy = APP_UPDATE_BUSY_STATUSES.has(appUpdateState.status);
 
   useEffect(() => {
     let cancelled = false;
@@ -332,32 +359,56 @@ export default function App() {
     refreshPriceCache();
   }, [refreshPriceCache]);
 
-  const handleImportCardDatabase = useCallback(async () => {
+  const handleUpdateCardDatabase = useCallback(async () => {
+    if (cardDatabaseBusy) {
+      return;
+    }
+
     if (isDesktopRuntime()) {
+      setCardDatabaseBusy(true);
+      setUpdateTask({
+        title: 'Updating card database',
+        detail: 'Downloading the Riot gallery and rebuilding card hashes...',
+        progress: 0.12,
+      });
+      await yieldToPaint();
+
       try {
-        const selectedPath = await openDesktopFileDialog({
-          title: 'Select card-hashes.json',
-          multiple: false,
-          filters: [{ name: 'Card hashes', extensions: ['json'] }],
+        setUpdateTask({
+          title: 'Updating card database',
+          detail: 'Fetching and rebuilding cached card art...',
+          progress: 0.42,
         });
-
-        if (!selectedPath || Array.isArray(selectedPath)) {
-          return;
-        }
-
-        const text = await invokeDesktopCommand('import_card_database', { filePath: selectedPath });
+        const text = await invokeDesktopCommand('update_card_database');
+        setUpdateTask({
+          title: 'Updating card database',
+          detail: 'Importing the refreshed matcher database...',
+          progress: 0.78,
+        });
         await processCardDatabaseText(text);
+        setUpdateTask({
+          title: 'Updating card database',
+          detail: 'Refreshing local set filters...',
+          progress: 0.95,
+        });
         setScanSetOptions(buildScanSetOptions(getMatcher().cards));
         return;
       } catch (error) {
-        console.error('[App] Desktop card database import error:', error);
+        console.error('[App] Desktop card database update error:', error);
         showNotification(`Card database update failed: ${error.message}`, 'error');
         return;
+      } finally {
+        setCardDatabaseBusy(false);
+        setUpdateTask(null);
       }
     }
 
     cardDatabaseInputRef.current?.click();
-  }, [processCardDatabaseText, showNotification]);
+  }, [cardDatabaseBusy, processCardDatabaseText, showNotification, yieldToPaint]);
+
+  const handleImportCardDatabase = useCallback(() => {
+    cardDatabaseInputRef.current?.click();
+  }, []);
 
   const handleCardDatabaseFileSelected = useCallback(async (event) => {
     const file = event.target.files?.[0];
@@ -380,12 +431,37 @@ export default function App() {
     }
 
     setPriceSyncBusy(true);
+    setUpdateTask({
+      title: 'Updating price cache',
+      detail: 'Fetching the latest cards.csv snapshot...',
+      progress: 0.12,
+    });
+    await yieldToPaint();
 
     try {
+      setUpdateTask({
+        title: 'Updating price cache',
+        detail: 'Refreshing currency conversion rates...',
+        progress: 0.42,
+      });
       const text = await fetchPriceSnapshotCsvFromGithub();
+      let exchangeRateOptions = {};
+
+      if (isDesktopRuntime()) {
+        exchangeRateOptions = await invokeDesktopCommand('fetch_exchange_rates');
+      } else {
+        exchangeRateOptions = await fetchExchangeRatesFromEcb();
+      }
+
       const result = await importPriceSnapshotCsv(text, {
         sourceHint: PRICE_SOURCE_URL,
         matcher: getMatcher(),
+        ...exchangeRateOptions,
+      });
+      setUpdateTask({
+        title: 'Updating price cache',
+        detail: 'Saving matched price rows and FX metadata...',
+        progress: 0.8,
       });
       await refreshPriceCache();
       const rateLabel = result.exchangeRate
@@ -397,8 +473,143 @@ export default function App() {
       showNotification(`Price update failed: ${error.message}`, 'error');
     } finally {
       setPriceSyncBusy(false);
+      setUpdateTask(null);
     }
   }, [priceSyncBusy, refreshPriceCache, showNotification]);
+
+  const handleCheckAppUpdate = useCallback(async (options = {}) => {
+    const silent = Boolean(options?.silent);
+
+    if (!isDesktopRuntime()) {
+      const nextState = {
+        ...APP_UPDATE_IDLE_STATE,
+        status: 'unavailable',
+        message: 'App updates are only available in the Windows desktop build.',
+        checkedAt: new Date().toISOString(),
+      };
+      setAppUpdateState(nextState);
+      if (!silent) {
+        showNotification(nextState.message, 'info');
+      }
+      return null;
+    }
+
+    setAppUpdateState((previous) => ({
+      ...previous,
+      status: 'checking',
+      message: 'Checking for app updates...',
+      error: null,
+      progress: null,
+    }));
+
+    try {
+      const update = await checkForAppUpdate();
+      const checkedAt = new Date().toISOString();
+
+      if (update) {
+        setAppUpdateState({
+          status: 'available',
+          update,
+          message: `Version ${update.version} is available.`,
+          progress: null,
+          checkedAt,
+          error: null,
+        });
+        showNotification(`App update available: v${update.version}`, 'info');
+        return update;
+      }
+
+      setAppUpdateState({
+        status: 'current',
+        update: null,
+        message: 'Riftbound Scanner is up to date.',
+        progress: null,
+        checkedAt,
+        error: null,
+      });
+      if (!silent) {
+        showNotification('Riftbound Scanner is up to date', 'success');
+      }
+      return null;
+    } catch (error) {
+      const message = error?.message || 'Update check failed.';
+      console.error('[App] App update check failed:', error);
+      setAppUpdateState((previous) => ({
+        ...previous,
+        status: 'error',
+        message,
+        error: message,
+        progress: null,
+        checkedAt: new Date().toISOString(),
+      }));
+      if (!silent) {
+        showNotification(`Update check failed: ${message}`, 'error');
+      }
+      return null;
+    }
+  }, [showNotification]);
+
+  const handleInstallAppUpdate = useCallback(async () => {
+    const update = appUpdateState.update;
+    if (!update || appUpdateBusy) {
+      return;
+    }
+
+    setAppUpdateState((previous) => ({
+      ...previous,
+      status: 'downloading',
+      message: `Downloading version ${update.version}...`,
+      progress: { percent: 0, downloadedBytes: 0, totalBytes: null },
+      error: null,
+    }));
+
+    try {
+      await downloadAndInstallAppUpdate(update, (progress) => {
+        setAppUpdateState((previous) => ({
+          ...previous,
+          status: progress.status === 'finished' ? 'installing' : 'downloading',
+          message: progress.status === 'finished'
+            ? 'Installing update...'
+            : `Downloading version ${update.version}...`,
+          progress,
+        }));
+      });
+
+      setAppUpdateState((previous) => ({
+        ...previous,
+        status: 'relaunching',
+        message: 'Update installed. Restarting Riftbound Scanner...',
+        progress: { percent: 100 },
+      }));
+      showNotification('Update installed. Restarting...', 'success');
+      await relaunchApp();
+    } catch (error) {
+      const message = error?.message || 'Update installation failed.';
+      console.error('[App] App update install failed:', error);
+      setAppUpdateState((previous) => ({
+        ...previous,
+        status: 'error',
+        message,
+        error: message,
+        progress: null,
+      }));
+      showNotification(`Update install failed: ${message}`, 'error');
+    }
+  }, [appUpdateBusy, appUpdateState.update, showNotification]);
+
+  const hasCheckedForAppUpdate = useRef(false);
+  useEffect(() => {
+    if (isLoading || initError || hasCheckedForAppUpdate.current || !isDesktopRuntime()) {
+      return undefined;
+    }
+
+    hasCheckedForAppUpdate.current = true;
+    const timer = setTimeout(() => {
+      handleCheckAppUpdate({ silent: true });
+    }, 1600);
+
+    return () => clearTimeout(timer);
+  }, [handleCheckAppUpdate, initError, isLoading]);
 
   // Show notification if state was restored from previous session
   useEffect(() => {
@@ -421,6 +632,10 @@ export default function App() {
   useEffect(() => {
     saveToStorage(STORAGE_KEYS.PENDING_CARDS, pendingCards);
   }, [pendingCards]);
+
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.RECENT_PENDING_SCAN_EVENTS, recentPendingScanEvents);
+  }, [recentPendingScanEvents]);
 
   useEffect(() => {
     saveToStorage(STORAGE_KEYS.BATCH_DEFAULTS, batchDefaults);
@@ -454,6 +669,7 @@ export default function App() {
       if (document.visibilityState === 'hidden') {
         saveToStorage(STORAGE_KEYS.SCANNED_CARDS, scannedCards);
         saveToStorage(STORAGE_KEYS.PENDING_CARDS, pendingCards);
+        saveToStorage(STORAGE_KEYS.RECENT_PENDING_SCAN_EVENTS, recentPendingScanEvents);
         saveToStorage(STORAGE_KEYS.BATCH_DEFAULTS, batchDefaults);
         saveToStorage(STORAGE_KEYS.MODEL_PREFERENCE, modelPreference);
         saveToStorage(STORAGE_KEYS.EXPORT_FORMAT, exportFormat);
@@ -463,6 +679,7 @@ export default function App() {
     const handleBeforeUnload = () => {
       saveToStorage(STORAGE_KEYS.SCANNED_CARDS, scannedCards);
       saveToStorage(STORAGE_KEYS.PENDING_CARDS, pendingCards);
+      saveToStorage(STORAGE_KEYS.RECENT_PENDING_SCAN_EVENTS, recentPendingScanEvents);
       saveToStorage(STORAGE_KEYS.BATCH_DEFAULTS, batchDefaults);
       saveToStorage(STORAGE_KEYS.MODEL_PREFERENCE, modelPreference);
       saveToStorage(STORAGE_KEYS.EXPORT_FORMAT, exportFormat);
@@ -477,7 +694,7 @@ export default function App() {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('pagehide', handleBeforeUnload);
     };
-  }, [scannedCards, pendingCards, batchDefaults, modelPreference, exportFormat]);
+  }, [scannedCards, pendingCards, recentPendingScanEvents, batchDefaults, modelPreference, exportFormat]);
 
   // ─── Refs for use in callbacks without stale closures ──
   const batchDefaultsRef = useRef(batchDefaults);
@@ -488,6 +705,15 @@ export default function App() {
   const passesScanThreshold = useCallback((result) => {
     const similarity = Number(result?.similarity ?? 0);
     return similarity >= minConfidenceRef.current;
+  }, []);
+
+  const recordRecentPendingScan = useCallback((cardId, timestamp) => {
+    if (!cardId || !timestamp) return;
+
+    setRecentPendingScanEvents((prev) => {
+      const next = [...prev, { cardId, scanTimestamp: timestamp }];
+      return next.slice(-12);
+    });
   }, []);
 
   const getCollectionVariantKey = useCallback((card) => {
@@ -553,6 +779,8 @@ export default function App() {
       }
     });
 
+    recordRecentPendingScan(cardData.id, timestamp);
+
     setScanAddAnimation({
       key: `${cardData.id}-${timestamp}`,
       cardData,
@@ -562,7 +790,7 @@ export default function App() {
     if (navigator.vibrate) {
       navigator.vibrate(50);
     }
-  }, [passesScanThreshold, priceByCardId, showNotification]);
+  }, [passesScanThreshold, priceByCardId, recordRecentPendingScan, showNotification]);
 
   const handleAddPendingCard = useCallback((cardData, options = {}) => {
     if (!cardData) return;
@@ -600,6 +828,8 @@ export default function App() {
       }];
     });
 
+    recordRecentPendingScan(cardData.id, timestamp);
+
     setScanAddAnimation({
       key: `${cardData.id}-${timestamp}`,
       cardData,
@@ -611,7 +841,7 @@ export default function App() {
     if (navigator.vibrate) {
       navigator.vibrate(50);
     }
-  }, [priceByCardId, showNotification]);
+  }, [priceByCardId, recordRecentPendingScan, showNotification]);
 
   // ─── Auto-Scan ────────────────────────────────────────────
   const autoScan = useAutoScan({
@@ -662,23 +892,32 @@ export default function App() {
 
     mergeCardsIntoCollection(pendingCards);
     setPendingCards([]);
+    setRecentPendingScanEvents([]);
     showNotification(`${pendingCards.length} card${pendingCards.length !== 1 ? 's' : ''} added to export`, 'success');
   }, [mergeCardsIntoCollection, pendingCards, showNotification]);
 
   const handleRemovePending = useCallback((cardId) => {
     setPendingCards(prev => prev.filter(card => card.cardData.id !== cardId));
+    setRecentPendingScanEvents(prev => prev.filter((entry) => entry.cardId !== cardId));
   }, []);
 
   const handleAdjustPendingQuantity = useCallback((cardId, delta) => {
     if (delta === 0) return;
 
+    const card = pendingCards.find((entry) => entry.cardData.id === cardId);
+    if (!card) return;
+
+    if (delta > 0) {
+      recordRecentPendingScan(cardId, Date.now());
+    }
+
     setPendingCards(prev => {
       const index = prev.findIndex(card => card.cardData.id === cardId);
       if (index < 0) return prev;
-      const card = prev[index];
+      const cardEntry = prev[index];
 
       if (delta > 0) {
-        showNotification(`${card.cardData.name} duplicate added to pending`, 'success');
+        showNotification(`${cardEntry.cardData.name} duplicate added to pending`, 'success');
         return prev.map((entry, entryIndex) => (
           entryIndex === index
             ? { ...entry, quantity: entry.quantity + delta }
@@ -686,9 +925,9 @@ export default function App() {
         ));
       }
 
-      const nextQuantity = card.quantity + delta;
+      const nextQuantity = cardEntry.quantity + delta;
       if (nextQuantity > 0) {
-        showNotification(`${card.cardData.name} duplicate removed from pending`, 'info');
+        showNotification(`${cardEntry.cardData.name} duplicate removed from pending`, 'info');
         return prev.map((entry, entryIndex) => (
           entryIndex === index
             ? { ...entry, quantity: nextQuantity }
@@ -696,13 +935,18 @@ export default function App() {
         ));
       }
 
-      showNotification(`${card.cardData.name} removed from pending`, 'info');
+      showNotification(`${cardEntry.cardData.name} removed from pending`, 'info');
       return prev.filter((_, entryIndex) => entryIndex !== index);
     });
-  }, [showNotification]);
+
+    if (delta < 0 && card.quantity + delta <= 0) {
+      setRecentPendingScanEvents((prevEvents) => prevEvents.filter((entry) => entry.cardId !== cardId));
+    }
+  }, [pendingCards, recordRecentPendingScan, showNotification]);
 
   const handleClearPending = useCallback(() => {
     setPendingCards([]);
+    setRecentPendingScanEvents([]);
   }, []);
 
   // ─── Card Management ───────────────────────────────────────
@@ -833,8 +1077,28 @@ export default function App() {
   }, [scannedCards, showNotification, exportFormat]);
 
   // ─── Render ────────────────────────────────────────────────
+  const cardDatabaseInput = (
+    <input
+      ref={cardDatabaseInputRef}
+      type="file"
+      accept="application/json,.json"
+      className="hidden"
+      onChange={handleCardDatabaseFileSelected}
+    />
+  );
+
   if (initError) {
-    return <LoadingScreen progress={loadProgress} stage={loadStage} error={initError} onImportCardDatabase={handleImportCardDatabase} />;
+    return (
+      <>
+        {cardDatabaseInput}
+        <LoadingScreen
+          progress={loadProgress}
+          stage={loadStage}
+          error={initError}
+          onImportCardDatabase={initErrorType === 'hashes' ? handleImportCardDatabase : null}
+        />
+      </>
+    );
   }
 
   if (isLoading) {
@@ -843,13 +1107,7 @@ export default function App() {
 
   return (
     <AppShell>
-      <input
-        ref={cardDatabaseInputRef}
-        type="file"
-        accept="application/json,.json"
-        className="hidden"
-        onChange={handleCardDatabaseFileSelected}
-      />
+      {cardDatabaseInput}
 
       {/* Tab content */}
       <div className="flex-1 flex flex-col min-h-0">
@@ -876,6 +1134,7 @@ export default function App() {
             scanSetFilter={scanSetFilter}
             scanSetOptions={scanSetOptions}
             onUpdateScanSetFilter={setScanSetFilter}
+            recentPendingScanEvents={recentPendingScanEvents}
             priceByCardId={priceByCardId}
             priceCurrency={priceCurrency}
             priceExchangeRates={priceExchangeRates}
@@ -907,10 +1166,15 @@ export default function App() {
             detectorMode={detection.detectorMode}
             exportFormat={exportFormat}
             onUpdateExportFormat={setExportFormat}
-            onUpdateCardDatabase={handleImportCardDatabase}
+            onUpdateCardDatabase={handleUpdateCardDatabase}
             onUpdatePriceData={handleImportPriceSnapshot}
-            maintenanceBusy={priceSyncBusy}
-            cardDatabaseLabel={detection.detectorState === 'ready' ? (getMatcher().databaseSource === 'local' ? 'Imported locally' : 'Bundled file') : 'Unknown'}
+            maintenanceBusy={priceSyncBusy || cardDatabaseBusy || appUpdateBusy}
+            appUpdateState={appUpdateState}
+            onCheckAppUpdate={handleCheckAppUpdate}
+            onInstallAppUpdate={handleInstallAppUpdate}
+            cardDatabaseLabel={cardDatabaseSourceLabel}
+            cardDatabaseUpdatedAt={cardDatabaseUpdatedAt}
+            cardDatabaseSetCoverage={cardDatabaseSetCoverage}
             priceCacheLabel={priceSyncMeta
               ? `${priceSyncMeta.matchedRows}/${priceSyncMeta.totalRows} cards matched · FX ${priceExchangeRateDate}${priceSyncMeta.sourceHint ? ` · ${priceSyncMeta.sourceHint}` : ''}`
               : `${PRICE_SOURCE_LABEL} not imported yet`}
@@ -948,6 +1212,33 @@ export default function App() {
 
       {/* Toast */}
       <ToastNotification notification={notification} />
+
+      {updateTask && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-rift-950/80 px-6 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-3xl border border-gold-400/20 bg-rift-900/95 p-5 shadow-2xl shadow-black/30">
+            <div className="flex items-center gap-4">
+              <div className="h-12 w-12 animate-spin rounded-full border-4 border-gold-400/20 border-t-gold-400" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-gold-300">
+                  {updateTask.title}
+                </div>
+                <div className="mt-1 text-xs leading-relaxed text-rift-300">
+                  {updateTask.detail}
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-rift-700">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-gold-500 to-gold-400 transition-all duration-300"
+                style={{ width: `${Math.round(updateTask.progress * 100)}%` }}
+              />
+            </div>
+            <div className="mt-2 text-right text-[10px] text-rift-500">
+              {Math.round(updateTask.progress * 100)}%
+            </div>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }

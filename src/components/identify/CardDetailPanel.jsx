@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ChevronDown, Plus, Minus, CheckSquare, Square, Trash2, Sparkles, Search, X } from 'lucide-react';
 import { DOMAIN_COLORS, RARITY_STYLES, isFoilOnly } from '../../data/sampleCards.js';
-import { getCardImageUrl, getMatcher } from '../../lib/cardMatcher.js';
+import { getCardImageUrl, getMatcher, resolveCardImageSource } from '../../lib/cardMatcher.js';
 import { formatPrice } from '../../lib/priceFormat.js';
 
 /**
@@ -27,6 +27,7 @@ function resolveCardData(activeMatch) {
     tags: activeMatch.tags,
     illustrator: activeMatch.illustrator,
     text: activeMatch.text,
+    imageUrl: activeMatch.imageUrl,
   };
 }
 
@@ -102,7 +103,7 @@ export default function CardDetailPanel({
   }, [activeCardId]);
 
   // Get local card image URL from card ID
-  const originalImageUrl = activeMatch?.id ? getCardImageUrl(activeMatch.id) : null;
+  const originalImageUrl = resolveCardImageSource(activeMatch?.imageUrl, activeMatch?.id);
 
   const domainStyle = cardData?.domain ? (DOMAIN_COLORS[cardData.domain] || DOMAIN_COLORS.colorless) : null;
   const rarityStyle = cardData?.rarity ? (RARITY_STYLES[cardData.rarity] || RARITY_STYLES.common) : null;
@@ -153,7 +154,7 @@ export default function CardDetailPanel({
 
   return (
     <div
-      className={`rounded-2xl border-2 transition-all duration-200 overflow-hidden ${
+      className={`min-w-0 rounded-2xl border-2 transition-all duration-200 overflow-hidden ${
         isExpanded
           ? 'bg-rift-800/80'
           : 'bg-rift-800/50'
@@ -162,7 +163,7 @@ export default function CardDetailPanel({
     >
       {/* Collapsed header - always visible, tap anywhere to expand */}
       <div
-        className="flex items-center cursor-pointer"
+        className="flex w-full min-w-0 items-center cursor-pointer"
         onClick={() => setIsExpanded(!isExpanded)}
       >
         {/* Color indicator (clickable to match canvas) */}
@@ -190,7 +191,7 @@ export default function CardDetailPanel({
         )}
 
         <div
-          className={`flex-1 flex items-center gap-3 p-3 ${(!color || !hasMatch || !onToggleCheck) ? 'pl-4' : 'pl-1'}`}
+          className={`flex-1 min-w-0 flex items-center gap-3 p-3 ${(!color || !hasMatch || !onToggleCheck) ? 'pl-4' : 'pl-1'}`}
         >
           {/* Thumbnails: detected crop + original card */}
           <div className="flex gap-1.5 flex-shrink-0">
@@ -212,8 +213,8 @@ export default function CardDetailPanel({
               {activeMatch ? activeMatch.name : `Detection #${index + 1}`}
             </p>
             {cardData && (
-              <div className="space-y-1">
-                <p className="text-[10px] text-rift-400 truncate">
+              <div className="space-y-1 min-w-0">
+                <p className="min-w-0 text-[10px] text-rift-400 truncate">
                   {cardData.set} · #{cardData.collectorNumber}
                 </p>
                 {!isPendingCard && priceLabel && (

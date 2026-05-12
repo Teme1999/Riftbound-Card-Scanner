@@ -28,6 +28,13 @@ public/card-hashes.json
 public/models/
 release-assets/*.msi
 
+# Tauri updater signing keys
+riftbound-scanner-updater.key
+riftbound-scanner-updater.key.pub
+riftbound-scanner-updater.key.password.txt
+*.tauri.key
+*.tauri.key.pub
+
 # Tauri / Rust build output
 src-tauri/target/
 src-tauri/gen/

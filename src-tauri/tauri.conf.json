@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Riftbound Scanner",
-  "version": "26.5.10-1",
+  "mainBinaryName": "RiftboundScanner",
+  "version": "26.5.12-1",
   "identifier": "com.teme1999.riftboundscanner",
   "build": {
     "beforeBuildCommand": "npm run build",
@@ -25,7 +26,7 @@
       "capabilities": ["main-capability"],
       "csp": {
         "default-src": "'self' customprotocol: asset:",
-        "connect-src": "'self' asset: http://asset.localhost ipc: http://ipc.localhost https://raw.githubusercontent.com https://www.ecb.europa.eu",
+        "connect-src": "'self' asset: http://asset.localhost ipc: http://ipc.localhost https://github.com https://raw.githubusercontent.com https://www.ecb.europa.eu",
         "font-src": "'self' data:",
         "img-src": "'self' asset: http://asset.localhost blob: data:",
         "script-src": "'self' 'wasm-unsafe-eval'",
@@ -36,7 +37,43 @@
   },
   "bundle": {
     "active": true,
+    "category": "Utility",
+    "publisher": "Teme1999",
+    "homepage": "https://github.com/Teme1999/Riftbound-Card-Scanner",
+    "license": "MIT",
+    "licenseFile": "../LICENSE",
+    "createUpdaterArtifacts": true,
+    "shortDescription": "Local-first Riftbound card scanner and collection manager.",
+    "longDescription": "Riftbound Scanner is a desktop-first Riftbound TCG scanner that runs card detection, matching, and collection management locally on the user's machine.",
+    "copyright": "Copyright (c) 2026 Teme1999",
     "icon": ["../public/images/riftboundscanner.ico"],
-    "targets": ["msi"]
+    "targets": ["msi", "nsis"],
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "Riftbound Scanner",
+        "installerIcon": "../public/images/riftboundscanner.ico",
+        "uninstallerIcon": "../public/images/riftboundscanner.ico"
+      },
+      "wix": {
+        "upgradeCode": "fa6262ab-331e-5d2c-b1f7-c3f5e249cb23",
+        "version": "26.5.12.1"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE0MzVBNkRFMTUzOTJBOTcKUldTWEtqa1YzcVkxcEFaOGJmNk55Z1N4WUNRdDRHZmpFamRDVUR1M2pLb1V1Y3Vqc09tYm1iNVYK",
+      "endpoints": [
+        "https://github.com/Teme1999/Riftbound-Card-Scanner/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

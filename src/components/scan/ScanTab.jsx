@@ -209,6 +209,7 @@ function resolveMatchCardData(det) {
     tags: matchEntry.tags,
     illustrator: matchEntry.illustrator,
     text: matchEntry.text,
+    imageUrl: matchEntry.imageUrl,
   };
 }
 
@@ -288,6 +289,7 @@ function resolveMatcherCardData(card) {
     tags: card.tags,
     illustrator: card.illustrator,
     text: card.text,
+    imageUrl: card.imageUrl,
   };
 }
 
@@ -298,6 +300,7 @@ export default function ScanTab({
   detection,
   onSnapScan,
   pendingCards,
+  recentPendingScanEvents = [],
   onAddPendingCard,
   onConfirmPending,
   onConfirmAllPending,
@@ -354,11 +357,28 @@ export default function ScanTab({
   const totalPendingValueLabel = formatPrice(totalPendingValue, priceCurrency, priceExchangeRates) || (priceCurrency === 'USD' ? '$0.00' : '€0.00');
 
   const recentPendingCards = useMemo(() => {
+    if (recentPendingScanEvents.length > 0) {
+      const pendingById = new Map(pendingCards.map((card) => [card.cardData.id, card]));
+      return recentPendingScanEvents
+        .slice(-3)
+        .reverse()
+        .map((event) => {
+          const card = pendingById.get(event.cardId);
+          if (!card) return null;
+          return {
+            ...card,
+            recentScanTimestamp: event.scanTimestamp,
+          };
+        })
+        .filter(Boolean)
+        .slice(0, 3);
+    }
+
     return [...pendingCards]
       .filter((card) => !card.manualAdded)
-      .sort((left, right) => (Number(right.scanTimestamp || 0) - Number(left.scanTimestamp || 0)))
-      .slice(0, 3);
-  }, [pendingCards]);
+      .slice(-3)
+      .reverse();
+  }, [pendingCards, recentPendingScanEvents]);
 
   const manualCardResults = useMemo(() => {
     const matcher = getMatcher();
@@ -588,7 +608,7 @@ export default function ScanTab({
 
   const sortedPendingCards = useMemo(() => {
     if (pendingSort === 'original') {
-      return pendingCards;
+      return [...pendingCards].reverse();
     }
 
     const getConfidence = (card) => Number(card.similarity ?? card.confidence ?? 0);
@@ -1112,18 +1132,18 @@ export default function ScanTab({
                     <div className="mt-3 grid gap-2">
                       {recentPendingCards.map((card) => (
                         <div
-                          key={`${card.cardData.id}-${card.scanTimestamp}`}
-                          className="flex items-center justify-between gap-3 rounded-lg border border-rift-600/30 bg-rift-800/70 px-3 py-2"
+                          key={`${card.cardData.id}-${card.recentScanTimestamp || card.scanTimestamp}`}
+                          className="flex w-full min-w-0 items-center justify-between gap-3 rounded-lg border border-rift-600/30 bg-rift-800/70 px-3 py-2"
                         >
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium text-rift-100">
+                          <div className="min-w-0 flex-1">
+                            <div className="min-w-0 truncate text-sm font-medium text-rift-100">
                               {card.cardData.name}
                             </div>
                             <div className="text-[10px] uppercase tracking-wider text-rift-400">
                               ID {card.cardData.id}
                             </div>
                           </div>
-                          <div className="flex items-center gap-2 text-right">
+                          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 text-right">
                             <span className="rounded-full border border-rift-600/40 bg-rift-700/60 px-2 py-0.5 text-[10px] font-medium text-rift-300">
                               x{card.quantity}
                             </span>
@@ -1265,18 +1285,18 @@ export default function ScanTab({
                     <div className="mt-3 grid gap-2">
                       {recentPendingCards.map((card) => (
                         <div
-                          key={`${card.cardData.id}-${card.scanTimestamp}`}
-                          className="flex items-center justify-between gap-3 rounded-lg border border-rift-600/30 bg-rift-800/70 px-3 py-2"
+                          key={`${card.cardData.id}-${card.recentScanTimestamp || card.scanTimestamp}`}
+                          className="flex w-full min-w-0 items-center justify-between gap-3 rounded-lg border border-rift-600/30 bg-rift-800/70 px-3 py-2"
                         >
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium text-rift-100">
+                          <div className="min-w-0 flex-1">
+                            <div className="min-w-0 truncate text-sm font-medium text-rift-100">
                               {card.cardData.name}
                             </div>
                             <div className="text-[10px] uppercase tracking-wider text-rift-400">
                               ID {card.cardData.id}
                             </div>
                           </div>
-                          <div className="flex items-center gap-2 text-right">
+                          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 text-right">
                             <span className="rounded-full border border-rift-600/40 bg-rift-700/60 px-2 py-0.5 text-[10px] font-medium text-rift-300">
                               x{card.quantity}
                             </span>

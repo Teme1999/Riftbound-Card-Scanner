@@ -1,10 +1,8 @@
 /**
  * IndexedDB Storage Layer for Riftbound Scanner
  *
- * Stores:
- *   - Reference card hashes (for pHash matching)
- *   - Card metadata (from Riftcodex/Riot API)
- *   - User scan history
+ * Stores the local matcher database and optional price cache.
+ * Legacy cards/hash/scan stores remain in the schema for existing users.
  */
 
 const DB_NAME = 'riftbound-scanner';
@@ -86,206 +84,14 @@ function openDB() {
   });
 }
 
-/**
- * Generic transaction helper
- */
-async function withTransaction(storeName, mode, callback) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, mode);
-    const store = tx.objectStore(storeName);
-    const result = callback(store);
-
-    tx.oncomplete = () => resolve(result);
-    tx.onerror = (e) => reject(e.target.error);
-  });
-}
-
 function cloneMatcherDatabase(database) {
   return {
     ...database,
     cards: (database?.cards || []).map((card) => ({
       ...card,
       f: card.f instanceof Float32Array ? card.f : new Float32Array(card.f),
-      d: card.d instanceof Float32Array ? card.d : (card.d ? new Float32Array(card.d) : undefined),
     })),
   };
-}
-
-// ─── Card Metadata Operations ─────────────────────────────────────────────
-
-/**
- * Store an array of cards from the API
- */
-export async function storeCards(cards) {
-  const db = await openDB();
-  const tx = db.transaction(STORES.CARDS, 'readwrite');
-  const store = tx.objectStore(STORES.CARDS);
-
-  for (const card of cards) {
-    store.put(card);
-  }
-
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve(cards.length);
-    tx.onerror = (e) => reject(e.target.error);
-  });
-}
-
-/**
- * Get all cards, optionally filtered by set
- */
-export async function getCards(setId = null) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORES.CARDS, 'readonly');
-    const store = tx.objectStore(STORES.CARDS);
-
-    let request;
-    if (setId) {
-      const index = store.index('by_set');
-      request = index.getAll(setId);
-    } else {
-      request = store.getAll();
-    }
-
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (e) => reject(e.target.error);
-  });
-}
-
-/**
- * Get a card by its ID
- */
-export async function getCard(id) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORES.CARDS, 'readonly');
-    const store = tx.objectStore(STORES.CARDS);
-    const request = store.get(id);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (e) => reject(e.target.error);
-  });
-}
-
-/**
- * Look up a card by set and collector number
- */
-export async function getCardByCollector(set, collectorNumber) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORES.CARDS, 'readonly');
-    const store = tx.objectStore(STORES.CARDS);
-    const index = store.index('by_collector');
-    const request = index.get([set, collectorNumber]);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (e) => reject(e.target.error);
-  });
-}
-
-// ─── Hash Operations ──────────────────────────────────────────────────────
-
-/**
- * Store reference hashes for cards
- * @param {Array<{cardId: string, hash: number, set: string}>} hashes
- */
-export async function storeHashes(hashes) {
-  const db = await openDB();
-  const tx = db.transaction(STORES.HASHES, 'readwrite');
-  const store = tx.objectStore(STORES.HASHES);
-
-  for (const entry of hashes) {
-    store.put(entry);
-  }
-
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve(hashes.length);
-    tx.onerror = (e) => reject(e.target.error);
-  });
-}
-
-/**
- * Get all reference hashes, optionally filtered by set
- * @returns {Array<{cardId: string, hash: number, set: string}>}
- */
-export async function getHashes(setId = null) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORES.HASHES, 'readonly');
-    const store = tx.objectStore(STORES.HASHES);
-
-    let request;
-    if (setId) {
-      const index = store.index('by_set');
-      request = index.getAll(setId);
-    } else {
-      request = store.getAll();
-    }
-
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (e) => reject(e.target.error);
-  });
-}
-
-/**
- * Count stored hashes
- */
-export async function getHashCount() {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORES.HASHES, 'readonly');
-    const store = tx.objectStore(STORES.HASHES);
-    const request = store.count();
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (e) => reject(e.target.error);
-  });
-}
-
-// ─── Scan History ─────────────────────────────────────────────────────────
-
-/**
- * Save a scan session
- */
-export async function saveScanSession(session) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORES.SCAN_HISTORY, 'readwrite');
-    const store = tx.objectStore(STORES.SCAN_HISTORY);
-    const request = store.add({
-      ...session,
-      timestamp: new Date().toISOString(),
-    });
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (e) => reject(e.target.error);
-  });
-}
-
-// ─── Utility ──────────────────────────────────────────────────────────────
-
-/**
- * Check if the database has been populated
- */
-export async function isDatabasePopulated() {
-  try {
-    const cards = await getCards();
-    return cards.length > 0;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Clear all data (for debugging)
- */
-export async function clearAll() {
-  const db = await openDB();
-  const tx = db.transaction([STORES.CARDS, STORES.HASHES, STORES.SCAN_HISTORY, STORES.PRICES, STORES.PRICE_SYNC_META], 'readwrite');
-  tx.objectStore(STORES.CARDS).clear();
-  tx.objectStore(STORES.HASHES).clear();
-  tx.objectStore(STORES.SCAN_HISTORY).clear();
-  tx.objectStore(STORES.PRICES).clear();
-  tx.objectStore(STORES.PRICE_SYNC_META).clear();
-  return new Promise((resolve) => { tx.oncomplete = resolve; });
 }
 
 // ─── Matcher Database Import ──────────────────────────────────────────────
@@ -297,15 +103,17 @@ export async function clearAll() {
 export async function saveMatcherDatabase(database) {
   const normalized = cloneMatcherDatabase(database);
   const db = await openDB();
+  const snapshot = {
+    id: 'card-hashes',
+    updatedAt: new Date().toISOString(),
+    database: normalized,
+  };
+
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORES.MATCHER_DB, 'readwrite');
     const store = tx.objectStore(STORES.MATCHER_DB);
-    store.put({
-      id: 'card-hashes',
-      updatedAt: new Date().toISOString(),
-      database: normalized,
-    });
-    tx.oncomplete = () => resolve(normalized);
+    store.put(snapshot);
+    tx.oncomplete = () => resolve(snapshot);
     tx.onerror = (e) => reject(e.target.error);
   });
 }
@@ -321,23 +129,15 @@ export async function loadMatcherDatabase() {
     const request = store.get('card-hashes');
     request.onsuccess = () => {
       const result = request.result;
-      resolve(result?.database ? cloneMatcherDatabase(result.database) : null);
+      resolve(result?.database
+        ? {
+            id: result.id || 'card-hashes',
+            updatedAt: result.updatedAt || null,
+            database: cloneMatcherDatabase(result.database),
+          }
+        : null);
     };
     request.onerror = (e) => reject(e.target.error);
-  });
-}
-
-/**
- * Remove the locally stored matcher database.
- */
-export async function clearMatcherDatabase() {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORES.MATCHER_DB, 'readwrite');
-    const store = tx.objectStore(STORES.MATCHER_DB);
-    store.delete('card-hashes');
-    tx.oncomplete = () => resolve();
-    tx.onerror = (e) => reject(e.target.error);
   });
 }
 
@@ -403,28 +203,3 @@ export async function loadPriceSyncMeta() {
   });
 }
 
-export async function savePriceSyncMeta(meta) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORES.PRICE_SYNC_META, 'readwrite');
-    const store = tx.objectStore(STORES.PRICE_SYNC_META);
-    store.put({
-      id: 'latest',
-      updatedAt: new Date().toISOString(),
-      ...meta,
-    });
-    tx.oncomplete = () => resolve();
-    tx.onerror = (e) => reject(e.target.error);
-  });
-}
-
-export async function getPriceCount() {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORES.PRICES, 'readonly');
-    const store = tx.objectStore(STORES.PRICES);
-    const request = store.count();
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (e) => reject(e.target.error);
-  });
-}
