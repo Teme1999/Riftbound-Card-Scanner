@@ -298,13 +298,27 @@ Then create a GitHub Release with:
 
 ### Normal Release Flow
 
-1. Set `package.json.version` to semver, for example `26.5.13-1`.
-2. Set `package.json.releaseVersion` to the GitHub release label, for example `2026.05.13.1`.
-3. Set `src-tauri/tauri.conf.json.version` to the same semver from step 1.
-4. Set `src-tauri/tauri.conf.json.bundle.windows.wix.version` to the MSI-safe numeric form, for example `26.5.13.1`.
-5. Commit and push to `main`.
-6. Wait for the `Release` workflow to finish.
-7. Download the generated MSI installer from the GitHub Release page.
+Version bumps are automated for normal `develop` to `main` merges. When `main`
+is pushed and the checked-in `package.json.releaseVersion` already has a GitHub
+release tag, the release workflow calculates the next `YYYY.MM.DD.N` release
+version, updates the version files, commits that bump back to `main`, and builds
+the release from the bumped commit.
+
+The release workflow updates:
+
+- `package.json.version`
+- `package.json.releaseVersion`
+- `src-tauri/tauri.conf.json.version`
+- `src-tauri/tauri.conf.json.bundle.windows.wix.version`
+- `src-tauri/Cargo.toml` package version
+- `package-lock.json` root package version
+
+Normal flow:
+
+1. Merge `develop` into `main`.
+2. Push `main`.
+3. Wait for the `Release` workflow to bump the version, build the app, and publish the release.
+4. Download the generated MSI installer from the GitHub Release page.
 
 Installed desktop builds also use:
 
