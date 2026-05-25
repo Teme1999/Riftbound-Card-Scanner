@@ -11,11 +11,10 @@
   },
   "type": "module",
   "scripts": {
-    "dev": "vite",
     "check:assets": "node scripts/check-runtime-assets.mjs",
     "check": "npm run check:assets && npm run desktop:check",
-    "build": "npm run check:assets && vite build",
-    "preview": "vite preview",
+    "tauri:dev-server": "vite",
+    "tauri:build-ui": "npm run check:assets && vite build",
     "desktop:dev": "tauri dev",
     "desktop:check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "desktop:build": "npm run check:assets && tauri build"
