@@ -22,6 +22,80 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Auto bump release version if needed
+        shell: pwsh
+        run: |
+          $releaseVersion = node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8')); process.stdout.write(pkg.releaseVersion || pkg.version);"
+          if (-not $releaseVersion) {
+            throw 'Failed to read package release version.'
+          }
+
+          $tag = "v$releaseVersion"
+          $existingTag = git ls-remote --tags origin "refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to query remote tag $tag."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($existingTag)) {
+            Write-Host "Release tag $tag does not exist. Using checked-in version."
+            exit 0
+          }
+
+          $helsinkiTimeZone = [System.TimeZoneInfo]::FindSystemTimeZoneById('FLE Standard Time')
+          $releaseDate = [System.TimeZoneInfo]::ConvertTimeFromUtc([System.DateTime]::UtcNow, $helsinkiTimeZone)
+          $releaseDateArg = $releaseDate.ToString('yyyy-MM-dd')
+          $releasePrefix = $releaseDate.ToString('yyyy.MM.dd')
+          $existingReleaseTags = git ls-remote --tags origin "refs/tags/v$releasePrefix.*"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to query release tags for $releasePrefix."
+          }
+
+          $highestIndex = 0
+          foreach ($line in ($existingReleaseTags -split "`n")) {
+            if ($line -match "refs/tags/v$([regex]::Escape($releasePrefix))\.(\d+)$") {
+              $index = [int]$Matches[1]
+              if ($index -gt $highestIndex) {
+                $highestIndex = $index
+              }
+            }
+          }
+
+          $nextIndex = $highestIndex + 1
+          node .github/scripts/bump-release-version.mjs --date=$releaseDateArg --index=$nextIndex
+
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Release version bump failed.'
+          }
+
+          $nextReleaseVersion = node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8')); process.stdout.write(pkg.releaseVersion || pkg.version);"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+
+          $changes = git status --short
+          if ([string]::IsNullOrWhiteSpace($changes)) {
+            Write-Host 'No version files changed after release bump.'
+            exit 0
+          }
+
+          git commit -m "chore: bump release version to $nextReleaseVersion [skip ci]"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to commit release version bump.'
+          }
+
+          git push origin HEAD:main
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to push release version bump to main. Check branch protection settings.'
+          }
+
+          Write-Host "Bumped release version from $releaseVersion to $nextReleaseVersion."
+
       - name: Resolve release version
         id: version
         shell: pwsh
@@ -34,6 +108,7 @@ jobs:
           "version=$($versionJson.version)" >> $env:GITHUB_OUTPUT
           "release_version=$($versionJson.releaseVersion)" >> $env:GITHUB_OUTPUT
           "tag=v$($versionJson.releaseVersion)" >> $env:GITHUB_OUTPUT
+          "commit_sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
 
       - name: Skip if release already exists
         id: existing_release
@@ -51,13 +126,6 @@ jobs:
             "exists=true" >> $env:GITHUB_OUTPUT
             Write-Host "Release tag $tag already exists. Skipping release build."
           }
-
-      - name: Set up Node.js
-        if: steps.existing_release.outputs.exists != 'true'
-        uses: actions/setup-node@v5
-        with:
-          node-version: 20
-          cache: npm
 
       - name: Set up Rust
         if: steps.existing_release.outputs.exists != 'true'
@@ -273,6 +341,6 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.release_version }}
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ steps.version.outputs.commit_sha }}
           generate_release_notes: true
           files: ${{ steps.installer.outputs.files }}
