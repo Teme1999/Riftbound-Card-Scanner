@@ -5,8 +5,8 @@
   "version": "26.5.12-1",
   "identifier": "com.teme1999.riftboundscanner",
   "build": {
-    "beforeBuildCommand": "npm run build",
-    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run tauri:build-ui",
+    "beforeDevCommand": "npm run tauri:dev-server",
     "devUrl": "https://localhost:5173",
     "frontendDist": "../dist"
   },
@@ -47,17 +47,11 @@
     "longDescription": "Riftbound Scanner is a desktop-first Riftbound TCG scanner that runs card detection, matching, and collection management locally on the user's machine.",
     "copyright": "Copyright (c) 2026 Teme1999",
     "icon": ["../public/images/riftboundscanner.ico"],
-    "targets": ["msi", "nsis"],
+    "targets": ["msi"],
     "windows": {
       "allowDowngrades": false,
       "webviewInstallMode": {
         "type": "embedBootstrapper"
-      },
-      "nsis": {
-        "installMode": "currentUser",
-        "startMenuFolder": "Riftbound Scanner",
-        "installerIcon": "../public/images/riftboundscanner.ico",
-        "uninstallerIcon": "../public/images/riftboundscanner.ico"
       },
       "wix": {
         "upgradeCode": "fa6262ab-331e-5d2c-b1f7-c3f5e249cb23",
