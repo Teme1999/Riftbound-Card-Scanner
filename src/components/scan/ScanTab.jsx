@@ -8,7 +8,7 @@ import CardDetailPanel from '../identify/CardDetailPanel.jsx';
 import { getDetector } from '../../lib/yoloDetector.js';
 import { getMatcher, filterCardsBySet } from '../../lib/cardMatcher.js';
 import { downloadCSV, validateForExport } from '../../lib/csvExporter.js';
-import { formatPrice } from '../../lib/priceFormat.js';
+import { formatPrice, getPriceValue as getRecordPriceValue } from '../../lib/priceFormat.js';
 import { isFoilOnly } from '../../data/sampleCards.js';
 
 const PENDING_SORT_OPTIONS = [
@@ -256,6 +256,7 @@ function pendingToDetection(card) {
         tags: card.cardData.tags,
         illustrator: card.cardData.illustrator,
         text: card.cardData.text,
+        imageUrl: card.cardData.imageUrl,
         sim: (sim * 100).toFixed(1),
         similarity: sim,
       }],
@@ -346,7 +347,7 @@ export default function ScanTab({
   const totalPending = pendingCards.reduce((sum, c) => sum + c.quantity, 0);
   const totalPendingValue = pendingCards.reduce((sum, card) => {
     const priceRecord = priceByCardId?.get(card.cardData.id);
-    const priceValue = Number(priceRecord?.marketPrice ?? priceRecord?.price);
+    const priceValue = getRecordPriceValue(priceRecord);
 
     if (!Number.isFinite(priceValue)) {
       return sum;
@@ -598,7 +599,7 @@ export default function ScanTab({
 
   const getPendingCardPriceLabel = useCallback((card) => {
     const priceRecord = priceByCardId?.get(card.cardData.id);
-    const priceValue = Number(priceRecord?.marketPrice ?? priceRecord?.price);
+    const priceValue = getRecordPriceValue(priceRecord);
     if (!Number.isFinite(priceValue)) {
       return null;
     }
@@ -614,8 +615,7 @@ export default function ScanTab({
     const getConfidence = (card) => Number(card.similarity ?? card.confidence ?? 0);
     const getPriceValue = (card) => {
       const priceRecord = priceByCardId?.get(card.cardData.id);
-      const priceValue = Number(priceRecord?.marketPrice ?? priceRecord?.price);
-      return Number.isFinite(priceValue) ? priceValue : Number.NEGATIVE_INFINITY;
+      return getRecordPriceValue(priceRecord) ?? Number.NEGATIVE_INFINITY;
     };
     const getCardId = (card) => String(card.cardData.id || '');
 

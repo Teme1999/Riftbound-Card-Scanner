@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ChevronDown, Plus, Minus, CheckSquare, Square, Trash2, Sparkles, Search, X } from 'lucide-react';
 import { DOMAIN_COLORS, RARITY_STYLES, isFoilOnly } from '../../data/sampleCards.js';
-import { getCardImageUrl, getMatcher, resolveCardImageSource } from '../../lib/cardMatcher.js';
-import { formatPrice } from '../../lib/priceFormat.js';
+import { getMatcher, resolveCardImageSource } from '../../lib/cardMatcher.js';
+import { formatPrice, getPriceValue } from '../../lib/priceFormat.js';
+import CardImage from '../CardImage.jsx';
 
 /**
  * Build a card data object directly from the match entry.
@@ -112,7 +113,7 @@ export default function CardDetailPanel({
   const confidenceColor = similarity >= 0.9 ? 'text-green-400 bg-green-400/10'
     : similarity >= 0.85 ? 'text-yellow-400 bg-yellow-400/10'
     : 'text-red-400 bg-red-400/10';
-  const priceLabel = priceRecord ? formatPrice(priceRecord.marketPrice ?? priceRecord.price, priceCurrency, priceExchangeRates) : null;
+  const priceLabel = priceRecord ? formatPrice(getPriceValue(priceRecord), priceCurrency, priceExchangeRates) : null;
   const quickRemoveLabel = quantity > 1 ? 'Remove duplicate' : 'Remove card';
 
   const handleSelectMatch = (matchIdx) => {
@@ -202,7 +203,7 @@ export default function CardDetailPanel({
             )}
             {originalImageUrl && (
               <div className="w-9 h-12 rounded-lg overflow-hidden bg-rift-700 border border-gold-400/40">
-                <img src={originalImageUrl} alt="Original" className="w-full h-full object-cover" />
+                <CardImage src={originalImageUrl} alt="Original" className="w-full h-full object-cover" />
               </div>
             )}
           </div>
@@ -297,7 +298,7 @@ export default function CardDetailPanel({
               <div className="flex flex-col items-center gap-1.5">
                 <p className="text-[10px] text-rift-400 uppercase tracking-wider">Original</p>
                 <div className="rounded-xl overflow-hidden border border-gold-400/30 shadow-lg w-[180px] aspect-[744/1039] bg-rift-700">
-                  <img src={originalImageUrl} alt="" className="w-full h-full object-cover" />
+                  <CardImage src={originalImageUrl} alt="Original" className="w-full h-full object-cover" />
                 </div>
               </div>
             )}

@@ -3,7 +3,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, normalizePath } from 'vite';
 import react from '@vitejs/plugin-react';
-import basicSsl from '@vitejs/plugin-basic-ssl';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -18,7 +17,6 @@ export default defineConfig({
   },
   plugins: [
     react(),
-    basicSsl(),
     viteStaticCopy({
       targets: [
         {

@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { CheckCircle2, ScanLine, Sparkles } from 'lucide-react';
 import { DOMAIN_COLORS } from '../../data/sampleCards.js';
-import { formatPrice } from '../../lib/priceFormat.js';
-import { getCardImageUrl, resolveCardImageSource } from '../../lib/cardMatcher.js';
+import { formatPrice, getPriceValue } from '../../lib/priceFormat.js';
+import { resolveCardImageSource } from '../../lib/cardMatcher.js';
 
 export default function ScanAddAnimation({ cardData, priceRecord, priceCurrency = 'EUR', priceExchangeRates }) {
   const [imageError, setImageError] = useState(false);
@@ -12,7 +12,7 @@ export default function ScanAddAnimation({ cardData, priceRecord, priceCurrency 
   }, [cardData.id]);
 
   const domainStyle = cardData.domain ? (DOMAIN_COLORS[cardData.domain] || DOMAIN_COLORS.colorless) : DOMAIN_COLORS.colorless;
-  const priceLabel = priceRecord ? formatPrice(priceRecord.marketPrice ?? priceRecord.price, priceCurrency, priceExchangeRates) : null;
+  const priceLabel = priceRecord ? formatPrice(getPriceValue(priceRecord), priceCurrency, priceExchangeRates) : null;
   const cardMeta = [cardData.setName || cardData.set, cardData.collectorNumber ? `#${cardData.collectorNumber}` : null]
     .filter(Boolean)
     .join(' - ');
