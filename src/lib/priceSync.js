@@ -89,9 +89,17 @@ function normalizeNumber(value) {
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/^\s*#\s*/g, '')
-    .replace(/[^a-z0-9/.-]+/gi, '')
+    .replace(/[^a-z0-9/.*-]+/gi, '')
     .trim()
     .toUpperCase();
+}
+
+function normalizeCollectorNumber(value) {
+  const normalized = normalizeNumber(value);
+  const firstPart = normalized.split('/')[0];
+  const codeNumber = firstPart.slice(firstPart.lastIndexOf('-') + 1);
+
+  return codeNumber.replace(/^0+(?=\d)/, '');
 }
 
 function parseMoney(value) {
@@ -195,36 +203,42 @@ function scoreCardMatch(card, row) {
 
   const cardName = normalizeText(card.name);
   const rowName = normalizeText(row.name);
-  const cardSet = normalizeText(card.set || card.setName);
+  const cardSets = [card.set, card.setName]
+    .map(normalizeText)
+    .filter(Boolean);
   const rowSet = normalizeText(row.set);
-  const cardNumber = normalizeNumber(card.collectorNumber || card.number || card.code);
-  const rowNumber = normalizeNumber(row.number);
+  const cardNumber = normalizeCollectorNumber(card.code || card.collectorNumber || card.number);
+  const rowNumber = normalizeCollectorNumber(row.number);
+  const nameMatches = cardName && rowName && cardName === rowName;
+  const setMatches = !rowSet || cardSets.includes(rowSet);
+  const numberMatches = !rowNumber || (cardNumber && cardNumber === rowNumber);
+  const rarityMatches = normalizeText(card.rarity) === normalizeText(row.rarity);
 
-  if (cardName && rowName) {
-    if (cardName === rowName) {
-      score += 60;
-    } else if (cardName.includes(rowName) || rowName.includes(cardName)) {
-      score += 25;
-    }
+  if (nameMatches) {
+    score += 100;
+  } else if (cardName && rowName && (cardName.includes(rowName) || rowName.includes(cardName))) {
+    score += 20;
   }
 
-  if (cardSet && rowSet) {
-    if (cardSet === rowSet) {
-      score += 25;
-    } else if (cardSet.includes(rowSet) || rowSet.includes(cardSet)) {
-      score += 10;
-    }
+  if (rowSet && setMatches) {
+    score += 80;
   }
 
-  if (cardNumber && rowNumber) {
-    if (cardNumber === rowNumber) {
-      score += 20;
-    } else if (cardNumber.includes(rowNumber) || rowNumber.includes(cardNumber)) {
-      score += 8;
-    }
+  if (rowNumber && numberMatches) {
+    score += 80;
   }
 
-  return score;
+  if (row.rarity && rarityMatches) {
+    score += 10;
+  }
+
+  return {
+    card,
+    score,
+    nameMatches,
+    setMatches,
+    numberMatches,
+  };
 }
 
 function resolveCardForRow(row, cards, nameIndex) {
@@ -232,22 +246,23 @@ function resolveCardForRow(row, cards, nameIndex) {
   const indexedCards = normalizedName ? (nameIndex.get(normalizedName) || []) : [];
   const candidates = indexedCards.length > 0 ? indexedCards : cards;
 
-  let bestCard = null;
-  let bestScore = -1;
+  const matches = candidates
+    .map((card) => scoreCardMatch(card, row))
+    .filter((match) => match.nameMatches && (match.setMatches || match.numberMatches))
+    .sort((left, right) => right.score - left.score);
 
-  for (const card of candidates) {
-    const score = scoreCardMatch(card, row);
-    if (score > bestScore) {
-      bestScore = score;
-      bestCard = card;
-    }
-  }
-
-  if (!bestCard || bestScore <= 0) {
+  if (matches.length === 0) {
     return null;
   }
 
-  return bestCard;
+  const bestMatch = matches[0];
+  const tiedMatch = matches[1] && matches[1].score === bestMatch.score;
+
+  if (tiedMatch) {
+    return null;
+  }
+
+  return bestMatch.card;
 }
 
 function normalizePriceRow(row) {

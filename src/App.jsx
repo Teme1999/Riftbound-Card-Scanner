@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import AppShell from './components/AppShell.jsx';
 import BottomTabBar from './components/BottomTabBar.jsx';
 import ToastNotification from './components/ToastNotification.jsx';
@@ -35,6 +36,7 @@ const STORAGE_KEYS = {
 };
 
 const SCAN_ADD_ANIMATION_MS = 980;
+const CARD_DATABASE_PROGRESS_EVENT = 'card-database-progress';
 const APP_UPDATE_IDLE_STATE = {
   status: 'idle',
   update: null,
@@ -61,6 +63,21 @@ function loadFromStorage(key, fallback) {
     console.warn('[Storage] Failed to load:', err);
     return fallback;
   }
+}
+
+function mergeCardDatabases(existingDatabase, updateDatabase) {
+  const cardsById = new Map(
+    (existingDatabase?.cards || []).map((card) => [card.id, card])
+  );
+
+  for (const card of updateDatabase?.cards || []) {
+    cardsById.set(card.id, card);
+  }
+
+  return {
+    gridSize: updateDatabase?.gridSize || existingDatabase?.gridSize,
+    cards: [...cardsById.values()],
+  };
 }
 
 export default function App() {
@@ -268,9 +285,7 @@ export default function App() {
   // ─── Initialization ────────────────────────────────────────
   const hasShownRestoreNotification = useRef(false);
 
-  const processCardDatabaseText = useCallback(async (text) => {
-    const parsed = JSON.parse(text);
-
+  const processCardDatabase = useCallback(async (parsed) => {
     if (!parsed || !Array.isArray(parsed.cards) || parsed.cards.length === 0) {
       throw new Error('The selected file does not look like a valid card-hashes.json database.');
     }
@@ -287,6 +302,10 @@ export default function App() {
       setInitErrorType(null);
     }
   }, [initErrorType, showNotification]);
+
+  const processCardDatabaseText = useCallback(async (text) => {
+    await processCardDatabase(JSON.parse(text));
+  }, [processCardDatabase]);
 
   const refreshPriceCache = useCallback(async () => {
     try {
@@ -368,30 +387,63 @@ export default function App() {
       setCardDatabaseBusy(true);
       setUpdateTask({
         title: 'Updating card database',
-        detail: 'Downloading the Riot gallery and rebuilding card hashes...',
-        progress: 0.12,
+        detail: 'Checking the Riot gallery for missing sets...',
+        progress: 0.02,
       });
       await yieldToPaint();
 
       try {
-        setUpdateTask({
-          title: 'Updating card database',
-          detail: 'Fetching and rebuilding cached card art...',
-          progress: 0.42,
+        const matcher = getMatcher();
+        const existingSetCodes = [...new Set(
+          matcher.cards
+            .map((card) => String(card.set || '').trim().toUpperCase())
+            .filter(Boolean)
+        )];
+        const unlisten = await listen(CARD_DATABASE_PROGRESS_EVENT, (event) => {
+          const progress = event.payload || {};
+          const percent = Number(progress.percent);
+
+          if (!Number.isFinite(percent)) {
+            return;
+          }
+
+          setUpdateTask((current) => current ? {
+            ...current,
+            detail: progress.message || current.detail,
+            progress: Math.max(current.progress, Math.min(1, percent)),
+          } : current);
         });
-        const text = await invokeDesktopCommand('update_card_database');
+
+        let text;
+        try {
+          text = await invokeDesktopCommand('update_card_database', { existingSetCodes });
+        } finally {
+          unlisten();
+        }
+
+        const updateDatabase = JSON.parse(text);
+        const mergedDatabase = mergeCardDatabases(
+          { gridSize: matcher.gridSize, cards: matcher.cards },
+          updateDatabase
+        );
         setUpdateTask({
           title: 'Updating card database',
           detail: 'Importing the refreshed matcher database...',
-          progress: 0.78,
+          progress: 0.96,
         });
-        await processCardDatabaseText(text);
+        await processCardDatabase(mergedDatabase);
         setUpdateTask({
           title: 'Updating card database',
           detail: 'Refreshing local set filters...',
-          progress: 0.95,
+          progress: 0.98,
         });
         setScanSetOptions(buildScanSetOptions(getMatcher().cards));
+        setUpdateTask({
+          title: 'Updating card database',
+          detail: 'Card database update complete.',
+          progress: 1,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 150));
         return;
       } catch (error) {
         console.error('[App] Desktop card database update error:', error);
@@ -404,7 +456,7 @@ export default function App() {
     }
 
     cardDatabaseInputRef.current?.click();
-  }, [cardDatabaseBusy, processCardDatabaseText, showNotification, yieldToPaint]);
+  }, [cardDatabaseBusy, processCardDatabase, showNotification, yieldToPaint]);
 
   const handleImportCardDatabase = useCallback(() => {
     cardDatabaseInputRef.current?.click();

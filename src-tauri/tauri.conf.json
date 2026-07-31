@@ -7,7 +7,7 @@
   "build": {
     "beforeBuildCommand": "npm run tauri:build-ui",
     "beforeDevCommand": "npm run tauri:dev-server",
-    "devUrl": "https://localhost:5173",
+    "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"
   },
   "app": {
@@ -34,6 +34,12 @@
         "script-src": "'self' 'wasm-unsafe-eval'",
         "style-src": "'self' 'unsafe-inline'",
         "worker-src": "'self' blob:"
+      },
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$LOCALDATA/Teme1999/RiftboundScanner/data/cards/**/*"
+        ]
       }
     }
   },

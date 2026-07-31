@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Download, Trash2, Layers, Search, X, ChevronDown } from 'lucide-react';
 import ScannerCardRow from '../scanner/ScannerCardRow.jsx';
+import { getPriceValue as getRecordPriceValue } from '../../lib/priceFormat.js';
 
 const COLLECTION_SORT_OPTIONS = [
   { value: 'original', label: 'Original' },
@@ -45,8 +46,7 @@ export default function CollectionTab({
     const getConfidence = (card) => Number(card.similarity ?? card.confidence ?? 0);
     const getPriceValue = (card) => {
       const priceRecord = priceByCardId?.get(card.cardData.id);
-      const priceValue = Number(priceRecord?.marketPrice ?? priceRecord?.price);
-      return Number.isFinite(priceValue) ? priceValue : Number.NEGATIVE_INFINITY;
+      return getRecordPriceValue(priceRecord) ?? Number.NEGATIVE_INFINITY;
     };
     const getCardId = (card) => String(card.cardData.id || '');
 

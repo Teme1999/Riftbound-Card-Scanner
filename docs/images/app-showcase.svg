@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">Riftbound Scanner product preview</title>
+  <desc id="desc">A dark blue and gold desktop card scanner interface with a scan area, pending cards, and local matcher status.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071526"/>
+      <stop offset="1" stop-color="#10152a"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe49a"/>
+      <stop offset=".45" stop-color="#d99a27"/>
+      <stop offset="1" stop-color="#8a4b12"/>
+    </linearGradient>
+    <linearGradient id="cardBlue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#163e72"/>
+      <stop offset="1" stop-color="#07152d"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000" flood-opacity=".45"/>
+    </filter>
+  </defs>
+
+  <rect width="1400" height="760" rx="34" fill="url(#bg)"/>
+  <circle cx="1130" cy="70" r="260" fill="#1b5c9c" opacity=".12"/>
+  <circle cx="170" cy="710" r="280" fill="#d79727" opacity=".08"/>
+
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <text x="72" y="78" fill="#f8d77e" font-size="18" font-weight="700" letter-spacing="5">RIFTBOUND SCANNER</text>
+    <text x="72" y="118" fill="#f5f8ff" font-size="34" font-weight="700">Scan the stack. Keep the collection.</text>
+    <text x="72" y="150" fill="#91a5c2" font-size="16">A local-first desktop workflow for recognition, review, and export.</text>
+
+    <g transform="translate(72 190)" filter="url(#shadow)">
+      <rect width="1256" height="500" rx="22" fill="#0b1221" stroke="#38506e" stroke-width="2"/>
+      <rect width="1256" height="54" rx="22" fill="#111d31"/>
+      <rect y="32" width="1256" height="22" fill="#111d31"/>
+      <circle cx="27" cy="27" r="6" fill="#ef6e65"/>
+      <circle cx="49" cy="27" r="6" fill="#e7bd58"/>
+      <circle cx="71" cy="27" r="6" fill="#5dcc8d"/>
+      <text x="104" y="33" fill="#b7c9df" font-size="14" font-weight="600">Riftbound Scanner</text>
+      <text x="1150" y="33" fill="#6f86a4" font-size="12">LOCAL MODE</text>
+
+      <rect x="26" y="80" width="738" height="382" rx="16" fill="#0e1d31" stroke="#263e5c"/>
+      <text x="52" y="116" fill="#f4d477" font-size="13" font-weight="700" letter-spacing="3">SCAN</text>
+      <text x="52" y="143" fill="#8299b8" font-size="13">Place a card inside the frame</text>
+      <rect x="116" y="175" width="560" height="220" rx="12" fill="#081322" stroke="#315278" stroke-width="2"/>
+      <path d="M142 207v-15h15M650 192h15v15M142 363v15h15M650 378h15v-15" fill="none" stroke="#58d6ff" stroke-width="5" stroke-linecap="round"/>
+      <rect x="324" y="206" width="145" height="178" rx="10" fill="url(#cardBlue)" stroke="url(#gold)" stroke-width="5" transform="rotate(-5 396 295)"/>
+      <path d="M344 237h106M344 252h77M344 337h84" stroke="#8cc9ff" stroke-width="5" opacity=".6" transform="rotate(-5 396 295)"/>
+      <circle cx="395" cy="294" r="27" fill="#1b81dc" opacity=".8"/>
+      <text x="350" y="434" fill="#5c7394" font-size="11" letter-spacing="2">CAMERA READY</text>
+
+      <rect x="790" y="80" width="440" height="382" rx="16" fill="#101a2b" stroke="#263e5c"/>
+      <text x="818" y="116" fill="#f4d477" font-size="13" font-weight="700" letter-spacing="3">PENDING (3)</text>
+      <text x="818" y="143" fill="#8299b8" font-size="13">Review before adding to your collection</text>
+
+      <g transform="translate(818 170)">
+        <rect width="384" height="72" rx="10" fill="#17243a"/>
+        <rect x="14" y="10" width="38" height="52" rx="5" fill="url(#cardBlue)" stroke="#e1b64e"/>
+        <text x="68" y="31" fill="#eff5ff" font-size="14" font-weight="600">Frostcoat Mother</text>
+        <text x="68" y="51" fill="#91a5c2" font-size="11">VEN · #032/166</text>
+        <text x="337" y="40" fill="#8be0b0" font-size="12">98%</text>
+      </g>
+      <g transform="translate(818 254)">
+        <rect width="384" height="72" rx="10" fill="#17243a"/>
+        <rect x="14" y="10" width="38" height="52" rx="5" fill="#244a64" stroke="#e1b64e"/>
+        <text x="68" y="31" fill="#eff5ff" font-size="14" font-weight="600">Shadowblade Lurker</text>
+        <text x="68" y="51" fill="#91a5c2" font-size="11">VEN · #096/166</text>
+        <text x="337" y="40" fill="#f1cc70" font-size="12">94%</text>
+      </g>
+      <g transform="translate(818 338)">
+        <rect width="384" height="72" rx="10" fill="#17243a"/>
+        <rect x="14" y="10" width="38" height="52" rx="5" fill="#503d5f" stroke="#e1b64e"/>
+        <text x="68" y="31" fill="#eff5ff" font-size="14" font-weight="600">Spiderling</text>
+        <text x="68" y="51" fill="#91a5c2" font-size="11">VEN · #097/166</text>
+        <text x="337" y="40" fill="#f1cc70" font-size="12">91%</text>
+      </g>
+
+      <rect x="26" y="476" width="1204" height="1" fill="#263e5c"/>
+      <circle cx="45" cy="492" r="5" fill="#65d89a"/>
+      <text x="60" y="497" fill="#9bb3ce" font-size="12">LOCAL MATCHER READY</text>
+      <text x="250" y="497" fill="#617995" font-size="12">•</text>
+      <text x="270" y="497" fill="#9bb3ce" font-size="12">DATABASE UPDATED</text>
+      <text x="466" y="497" fill="#617995" font-size="12">•</text>
+      <text x="486" y="497" fill="#9bb3ce" font-size="12">CSV EXPORT READY</text>
+    </g>
+  </g>
+</svg>

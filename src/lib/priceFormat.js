@@ -85,6 +85,16 @@ export function normalizeExchangeRates(rates) {
   return normalized;
 }
 
+export function getPriceValue(priceRecord) {
+  const marketPrice = Number(priceRecord?.marketPrice);
+  if (Number.isFinite(marketPrice) && marketPrice > 0) {
+    return marketPrice;
+  }
+
+  const listingPrice = Number(priceRecord?.price);
+  return Number.isFinite(listingPrice) && listingPrice > 0 ? listingPrice : null;
+}
+
 export function convertUsdPrice(value, currency = 'EUR', exchangeRates = FALLBACK_ECB_EUR_RATES) {
   const parsed = Number(value);
 

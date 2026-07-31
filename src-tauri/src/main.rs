@@ -6,7 +6,8 @@ use regex::Regex;
 use reqwest::blocking::Client;
 use serde::Serialize;
 use serde_json::Value;
-use std::{fs, path::Path, time::Duration};
+use std::{collections::HashSet, fs, path::Path, time::Duration};
+use tauri::Emitter;
 use url::Url;
 
 const GALLERY_URL: &str = "https://riftbound.leagueoflegends.com/en-us/card-gallery/";
@@ -17,6 +18,7 @@ const ART_LEFT: f32 = 0.05;
 const ART_RIGHT: f32 = 0.95;
 
 const ALLOWED_EXTERNAL_HOSTS: &[&str] = &["github.com"];
+const CARD_DATABASE_PROGRESS_EVENT: &str = "card-database-progress";
 
 #[derive(Serialize)]
 struct RuntimeInfo {
@@ -64,6 +66,35 @@ struct CardHashRecord {
   #[serde(rename = "imageUrl")]
   image_url: String,
   f: Vec<f32>,
+}
+
+#[derive(Clone, Serialize)]
+struct CardDatabaseProgress {
+  phase: String,
+  message: String,
+  completed: usize,
+  total: usize,
+  percent: f32,
+}
+
+fn emit_card_database_progress(
+  app: &tauri::AppHandle,
+  phase: &str,
+  message: String,
+  completed: usize,
+  total: usize,
+  percent: f32,
+) {
+  let _ = app.emit(
+    CARD_DATABASE_PROGRESS_EVENT,
+    CardDatabaseProgress {
+      phase: phase.to_string(),
+      message,
+      completed,
+      total,
+      percent,
+    },
+  );
 }
 
 fn value_to_string(value: Option<&Value>) -> String {
@@ -157,7 +188,28 @@ fn fetch_exchange_rates() -> Result<ExchangeRateInfo, String> {
 }
 
 #[tauri::command]
-fn update_card_database() -> Result<String, String> {
+async fn update_card_database(
+  app: tauri::AppHandle,
+  existing_set_codes: Vec<String>,
+) -> Result<String, String> {
+  tauri::async_runtime::spawn_blocking(move || update_card_database_blocking(app, existing_set_codes))
+    .await
+    .map_err(|error| format!("Card database update worker failed: {}", error))?
+}
+
+fn update_card_database_blocking(
+  app: tauri::AppHandle,
+  existing_set_codes: Vec<String>,
+) -> Result<String, String> {
+  emit_card_database_progress(
+    &app,
+    "starting",
+    "Preparing the card database update...".to_string(),
+    0,
+    0,
+    0.02,
+  );
+
   let client = Client::builder()
     .timeout(Duration::from_secs(30))
     .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -169,6 +221,15 @@ fn update_card_database() -> Result<String, String> {
   let cards_cache_dir = project_dirs.data_local_dir().join("cards");
   fs::create_dir_all(&cards_cache_dir)
     .map_err(|error| format!("Failed to create image cache directory {}: {}", cards_cache_dir.display(), error))?;
+
+  emit_card_database_progress(
+    &app,
+    "gallery",
+    "Downloading the Riot card gallery...".to_string(),
+    0,
+    0,
+    0.04,
+  );
 
   let html = client
     .get(GALLERY_URL)
@@ -184,15 +245,70 @@ fn update_card_database() -> Result<String, String> {
     return Err("No cards were found in the Riot gallery data.".to_string());
   }
 
+  let existing_sets = existing_set_codes
+    .into_iter()
+    .map(|set| set.trim().to_uppercase())
+    .filter(|set| !set.is_empty())
+    .collect::<HashSet<_>>();
+  let gallery_set_codes = raw_cards
+    .iter()
+    .map(raw_card_set_id)
+    .filter(|set| !set.is_empty())
+    .collect::<HashSet<_>>();
+  let missing_set_codes = gallery_set_codes
+    .difference(&existing_sets)
+    .cloned()
+    .collect::<HashSet<_>>();
+  let total_gallery_cards = raw_cards.len();
+  let raw_cards = raw_cards
+    .into_iter()
+    .filter(|raw_card| {
+      let set_id = raw_card_set_id(raw_card);
+      set_id.is_empty() || missing_set_codes.contains(&set_id)
+    })
+    .collect::<Vec<_>>();
+  let total_cards = raw_cards.len();
+  emit_card_database_progress(
+    &app,
+    "cards",
+    if total_cards == 0 {
+      format!(
+        "All {} gallery cards are already covered by the local database.",
+        total_gallery_cards
+      )
+    } else {
+      format!(
+        "Found {} gallery cards across {} sets. Rebuilding {} cards from missing sets...",
+        total_gallery_cards,
+        gallery_set_codes.len(),
+        total_cards
+      )
+    },
+    0,
+    total_cards,
+    if total_cards == 0 { 0.90 } else { 0.12 },
+  );
+
   let mut cards = Vec::new();
   let mut skipped = 0usize;
 
-  for raw_card in raw_cards {
+  for (index, raw_card) in raw_cards.into_iter().enumerate() {
     match normalize_card(&raw_card, &client, &cards_cache_dir) {
       Ok(Some(card)) => cards.push(card),
       Ok(None) => skipped += 1,
       Err(_) => skipped += 1,
     }
+
+    let completed = index + 1;
+    let percent = 0.12 + (completed as f32 / total_cards as f32) * 0.78;
+    emit_card_database_progress(
+      &app,
+      "cards",
+      format!("Processed {}/{} cards ({} skipped)...", completed, total_cards, skipped),
+      completed,
+      total_cards,
+      percent,
+    );
   }
 
   cards.sort_by(|left, right| {
@@ -207,10 +323,27 @@ fn update_card_database() -> Result<String, String> {
     cards,
   };
 
+  emit_card_database_progress(
+    &app,
+    "serializing",
+    format!("Generated {} cards. Preparing the refreshed database...", database.cards.len()),
+    total_cards,
+    total_cards,
+    0.93,
+  );
+
   let payload = serde_json::to_string(&database)
     .map_err(|error| format!("Failed to serialize matcher database: {}", error))?;
 
   println!("Card database updated: {} cards ({} skipped)", database.cards.len(), skipped);
+  emit_card_database_progress(
+    &app,
+    "complete",
+    "Card database generated. Importing it into the app...".to_string(),
+    total_cards,
+    total_cards,
+    0.95,
+  );
   Ok(payload)
 }
 
@@ -228,6 +361,19 @@ fn extract_next_data(html: &str) -> Result<Value, String> {
     .ok_or_else(|| "Could not read the gallery JSON payload.".to_string())?;
 
   serde_json::from_str(json_text).map_err(|error| format!("Failed to parse Riot gallery JSON: {}", error))
+}
+
+fn raw_card_set_id(raw: &Value) -> String {
+  raw
+    .get("set")
+    .and_then(Value::as_object)
+    .and_then(|set| set.get("value"))
+    .and_then(Value::as_object)
+    .and_then(|value| value.get("id"))
+    .and_then(Value::as_str)
+    .unwrap_or("")
+    .trim()
+    .to_uppercase()
 }
 
 fn extract_cards(next_data: &Value) -> Result<Vec<Value>, String> {

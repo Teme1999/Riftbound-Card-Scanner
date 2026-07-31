@@ -2,14 +2,15 @@ import React, { memo } from 'react';
 import { Trash2, Plus, Minus, Sparkles } from 'lucide-react';
 import { CONDITIONS, LANGUAGES, DOMAIN_COLORS, RARITY_STYLES, isFoilOnly } from '../../data/sampleCards.js';
 import { resolveCardImageSource } from '../../lib/cardMatcher.js';
-import { formatPrice } from '../../lib/priceFormat.js';
+import { formatPrice, getPriceValue } from '../../lib/priceFormat.js';
+import CardImage from '../CardImage.jsx';
 
 const ScannerCardRow = memo(function ScannerCardRow({ card, index, onUpdate, onRemove, onSplit, priceRecord, priceCurrency = 'EUR', priceExchangeRates }) {
   const { cardData, quantity, condition, language, foil, promo } = card;
   const domainStyle = DOMAIN_COLORS[cardData.domain] || DOMAIN_COLORS.colorless;
   const rarityStyle = RARITY_STYLES[cardData.rarity] || RARITY_STYLES.common;
   const foilOnly = isFoilOnly(cardData);
-  const priceLabel = priceRecord ? formatPrice(priceRecord.marketPrice ?? priceRecord.price, priceCurrency, priceExchangeRates) : null;
+  const priceLabel = priceRecord ? formatPrice(getPriceValue(priceRecord), priceCurrency, priceExchangeRates) : null;
   const canSplitVariant = Boolean(onSplit) && quantity > 1 && !foilOnly;
 
   const handleFieldChange = (field, value) => {
@@ -21,7 +22,7 @@ const ScannerCardRow = memo(function ScannerCardRow({ card, index, onUpdate, onR
       <div className="flex gap-3">
         {/* Card thumbnail */}
         <div className="w-12 h-16 rounded-lg overflow-hidden bg-rift-800 border border-rift-600/30 flex-shrink-0">
-          <img
+          <CardImage
             src={resolveCardImageSource(cardData.imageUrl, cardData.id)}
             alt={cardData.name}
             className="w-full h-full object-cover"
