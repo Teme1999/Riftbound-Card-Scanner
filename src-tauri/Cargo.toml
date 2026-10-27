@@ -1,6 +1,6 @@
 [package]
 name = "riftbound_scanner"
-version = "26.7.31-1"
+version = "26.10.2701"
 description = "Standalone desktop shell for Riftbound Scanner"
 authors = ["Teme1999"]
 license = "MIT"

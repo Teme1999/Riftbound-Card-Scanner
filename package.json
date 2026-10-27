@@ -1,8 +1,8 @@
 {
   "name": "riftbound-scanner",
   "private": true,
-  "version": "26.7.31-1",
-  "releaseVersion": "2026.07.31.1",
+  "version": "26.10.2701",
+  "releaseVersion": "2026.10.27.1",
   "license": "MIT",
   "homepage": "https://github.com/Teme1999/Riftbound-Card-Scanner",
   "repository": {
