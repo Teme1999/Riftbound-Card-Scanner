@@ -4,33 +4,7 @@ import { DOMAIN_COLORS, RARITY_STYLES, isFoilOnly } from '../../data/sampleCards
 import { getMatcher, resolveCardImageSource } from '../../lib/cardMatcher.js';
 import { formatPrice, getPriceValue } from '../../lib/priceFormat.js';
 import CardImage from '../CardImage.jsx';
-
-/**
- * Build a card data object directly from the match entry.
- * The match entry now contains all card metadata from the JSON.
- */
-function resolveCardData(activeMatch) {
-  if (!activeMatch) return null;
-
-  return {
-    id: activeMatch.id,
-    name: activeMatch.name,
-    collectorNumber: activeMatch.collectorNumber || String(activeMatch.number || ''),
-    code: activeMatch.code,
-    set: activeMatch.set,
-    setName: activeMatch.setName,
-    domain: activeMatch.domain,
-    domains: activeMatch.domains,
-    rarity: activeMatch.rarity,
-    type: activeMatch.type,
-    energy: activeMatch.energy,
-    might: activeMatch.might,
-    tags: activeMatch.tags,
-    illustrator: activeMatch.illustrator,
-    text: activeMatch.text,
-    imageUrl: activeMatch.imageUrl,
-  };
-}
+import { resolveCardData } from '../../lib/cardData.js';
 
 export default function CardDetailPanel({
   detection,
@@ -38,7 +12,8 @@ export default function CardDetailPanel({
   onAddToScanner,
   isChecked,
   onToggleCheck,
-  onMatchChange,
+  entry,
+  onEntryChange,
   color,
   isSelected,
   onSelect,
@@ -59,13 +34,8 @@ export default function CardDetailPanel({
     }
   }, [isSelected]);
   const [cropSrc, setCropSrc] = useState(null);
-  const [selectedMatchIdx, setSelectedMatchIdx] = useState(0);
-  const [localQuantity, setLocalQuantity] = useState(1);
-  const [localFoil, setLocalFoil] = useState(false);
-  const [localPromo, setLocalPromo] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [manualCard, setManualCard] = useState(null);
   const searchInputRef = useRef(null);
 
   const matchResult = detection.matchResult;
@@ -73,9 +43,13 @@ export default function CardDetailPanel({
   const top3 = matchResult?.top3 || [];
 
   // The active match is the one selected by the user, or a manually searched card
-  const activeMatch = manualCard || top3[selectedMatchIdx] || top3[0];
-  const similarity = activeMatch ? activeMatch.similarity : 0;
-  const activeCardId = activeMatch?.id;
+  const activeMatch = entry?.cardData || top3[0];
+  const selectedMatchIdx = top3.findIndex((match) => match.id === activeMatch?.id);
+  const manualCard = selectedMatchIdx < 0 ? activeMatch : null;
+  const localQuantity = entry?.quantity ?? 1;
+  const localFoil = Boolean(entry?.foil);
+  const localPromo = Boolean(entry?.promo);
+  const similarity = entry?.similarity ?? activeMatch?.similarity ?? 0;
 
   // Convert cropCanvas to data URL
   useEffect(() => {
@@ -84,24 +58,9 @@ export default function CardDetailPanel({
     }
   }, [detection.cropCanvas]);
 
-  // Notify parent when selected match changes
-  useEffect(() => {
-    if (activeCardId && onMatchChange) {
-      onMatchChange(index, activeCardId);
-    }
-  }, [activeCardId, index]);
-
   // Resolve card data directly from match entry (contains all metadata)
   const cardData = resolveCardData(activeMatch);
   const foilOnly = cardData ? isFoilOnly(cardData) : false;
-
-  // Reset foil and promo state when active match changes
-  useEffect(() => {
-    if (cardData) {
-      setLocalFoil(isFoilOnly(cardData));
-      setLocalPromo(false);
-    }
-  }, [activeCardId]);
 
   // Get local card image URL from card ID
   const originalImageUrl = resolveCardImageSource(activeMatch?.imageUrl, activeMatch?.id);
@@ -117,12 +76,13 @@ export default function CardDetailPanel({
   const quickRemoveLabel = quantity > 1 ? 'Remove duplicate' : 'Remove card';
 
   const handleSelectMatch = (matchIdx) => {
-    setManualCard(null);
-    setSelectedMatchIdx(matchIdx);
+    const match = top3[matchIdx];
+    if (!match) return;
+    onEntryChange({ cardData: resolveCardData(match), similarity: match.similarity ?? 1, foil: isFoilOnly(match), promo: false });
   };
 
   const handleSearchSelect = (card) => {
-    setManualCard(card);
+    onEntryChange({ cardData: resolveCardData(card), similarity: 1, foil: isFoilOnly(card), promo: false });
     setSearchOpen(false);
     setSearchQuery('');
   };
@@ -264,7 +224,7 @@ export default function CardDetailPanel({
           {/* Pending price badge */}
           {isPendingCard && (
             <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-500/10 border border-emerald-400/20 px-2 py-0.5 rounded-lg flex-shrink-0 whitespace-nowrap">
-              {priceLabel || '€0.00'}
+              {priceLabel || 'No price'}
             </span>
           )}
 
@@ -413,8 +373,8 @@ export default function CardDetailPanel({
                 <div className="grid grid-cols-2 gap-2">
                   <div className="rounded-xl bg-emerald-500/10 border border-emerald-400/20 px-3 py-2">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-[9px] uppercase tracking-wider text-emerald-200/80">Price</span>
-                      <span className="text-sm font-semibold text-emerald-300">{priceLabel || '€0.00'}</span>
+                      <span className="text-[9px] uppercase tracking-wider text-emerald-200/80">TCGPlayer estimate</span>
+                      <span className="text-sm font-semibold text-emerald-300">{priceLabel || 'No price'}</span>
                     </div>
                     {priceRecord?.updatedAt && (
                       <p className="text-[9px] text-emerald-200/60 mt-1">Updated {priceRecord.updatedAt}</p>
@@ -552,7 +512,7 @@ export default function CardDetailPanel({
                   Search again
                 </button>
                 <button
-                  onClick={() => setManualCard(null)}
+                  onClick={() => handleSelectMatch(0)}
                   className="text-[10px] text-rift-400 hover:text-rift-200 transition-colors"
                 >
                   Reset
@@ -617,7 +577,7 @@ export default function CardDetailPanel({
               <div className="flex items-center gap-1">
                 <span className="text-[10px] text-rift-400 uppercase tracking-wider mr-1">Qty</span>
                 <button
-                  onClick={() => setLocalQuantity(q => Math.max(1, q - 1))}
+                  onClick={() => onEntryChange({ quantity: Math.max(1, localQuantity - 1) })}
                   className="w-7 h-7 rounded-lg bg-rift-700 border border-rift-600/40 flex items-center justify-center text-rift-300 hover:bg-rift-600 transition-colors"
                 >
                   <Minus className="w-3 h-3" />
@@ -628,12 +588,12 @@ export default function CardDetailPanel({
                   value={localQuantity}
                   onChange={(e) => {
                     const v = parseInt(e.target.value);
-                    if (!isNaN(v)) setLocalQuantity(Math.min(99, Math.max(1, v)));
+                    if (!isNaN(v)) onEntryChange({ quantity: Math.min(99, Math.max(1, v)) });
                   }}
                   className="w-10 h-7 text-center text-xs font-mono bg-rift-700 border border-rift-600/40 rounded-lg text-rift-100 focus:outline-none focus:border-gold-500/60"
                 />
                 <button
-                  onClick={() => setLocalQuantity(q => Math.min(99, q + 1))}
+                  onClick={() => onEntryChange({ quantity: Math.min(99, localQuantity + 1) })}
                   className="w-7 h-7 rounded-lg bg-rift-700 border border-rift-600/40 flex items-center justify-center text-rift-300 hover:bg-rift-600 transition-colors"
                 >
                   <Plus className="w-3 h-3" />
@@ -642,7 +602,7 @@ export default function CardDetailPanel({
 
               {/* Foil toggle */}
               <button
-                onClick={() => !foilOnly && setLocalFoil(f => !f)}
+                onClick={() => !foilOnly && onEntryChange({ foil: !localFoil })}
                 disabled={foilOnly}
                 title={foilOnly ? 'Always foil (Rare/Epic)' : localFoil ? 'Foil' : 'Standard'}
                 className={`h-7 min-w-[90px] rounded-lg border flex items-center justify-center gap-1 transition-all px-2.5 ${
@@ -657,7 +617,7 @@ export default function CardDetailPanel({
 
               {/* Promo toggle */}
               <button
-                onClick={() => setLocalPromo(p => !p)}
+                onClick={() => onEntryChange({ promo: !localPromo })}
                 title={localPromo ? 'Promo' : 'Standard'}
                 className={`h-7 min-w-[90px] rounded-lg border flex items-center justify-center transition-all px-2.5 text-[10px] font-medium cursor-pointer ${
                   localPromo
@@ -693,7 +653,7 @@ export default function CardDetailPanel({
               )}
               <div className="flex gap-2">
                 <button
-                  onClick={() => onAddToScanner({ cardData, quantity: localQuantity, foil: localFoil || foilOnly, promo: localPromo })}
+                  onClick={() => onAddToScanner({ ...entry, cardData, quantity: localQuantity, foil: localFoil || foilOnly, promo: localPromo })}
                   className="flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-all btn-primary"
                 >
                   <Plus className="w-4 h-4" />

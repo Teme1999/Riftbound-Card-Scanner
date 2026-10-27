@@ -192,10 +192,10 @@ export default function CollectionTab({
           <>
             <div className="space-y-2">
               {sortedCards.map((card) => {
-                const originalIndex = scannedCards.findIndex(c => c.cardData.id === card.cardData.id && c.scanTimestamp === card.scanTimestamp);
+                const originalIndex = scannedCards.findIndex(c => c.entryId === card.entryId);
                 return (
                   <ScannerCardRow
-                    key={`${card.cardData.id}-${card.scanTimestamp}`}
+                    key={card.entryId}
                     card={card}
                     index={originalIndex}
                     onUpdate={onUpdateCard}

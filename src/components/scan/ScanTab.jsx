@@ -10,6 +10,9 @@ import { getMatcher, filterCardsBySet } from '../../lib/cardMatcher.js';
 import { downloadCSV, validateForExport } from '../../lib/csvExporter.js';
 import { formatPrice, getPriceValue as getRecordPriceValue } from '../../lib/priceFormat.js';
 import { isFoilOnly } from '../../data/sampleCards.js';
+import { resolveCardData } from '../../lib/cardData.js';
+import { createCardEntry, matchesPendingScan } from '../../lib/collection.js';
+import { getSelectedDetectionEntries } from '../../lib/scanEntries.js';
 
 const PENDING_SORT_OPTIONS = [
   { value: 'original', label: 'Original' },
@@ -21,62 +24,6 @@ const PENDING_SORT_OPTIONS = [
 ];
 
 // --- Card matching utilities ---
-
-function equalizeHistogram(data) {
-  for (let ch = 0; ch < 3; ch++) {
-    const hist = new Uint32Array(256);
-    for (let i = ch; i < data.length; i += 4) hist[data[i]]++;
-    const cdf = new Uint32Array(256);
-    cdf[0] = hist[0];
-    for (let i = 1; i < 256; i++) cdf[i] = cdf[i - 1] + hist[i];
-    let cdfMin = 0;
-    for (let i = 0; i < 256; i++) { if (cdf[i] > 0) { cdfMin = cdf[i]; break; } }
-    const denom = data.length / 4 - cdfMin;
-    if (denom > 0) {
-      for (let i = ch; i < data.length; i += 4) {
-        data[i] = ((cdf[data[i]] - cdfMin) * 255 / denom + 0.5) | 0;
-      }
-    }
-  }
-}
-
-function computeColorGrid(canvas, gridSize) {
-  // Equalize at full resolution first (matches Python pipeline)
-  const w = canvas.width, h = canvas.height;
-  const eq = document.createElement('canvas');
-  eq.width = w;
-  eq.height = h;
-  const eqCtx = eq.getContext('2d');
-  eqCtx.drawImage(canvas, 0, 0);
-  const fullData = eqCtx.getImageData(0, 0, w, h);
-  equalizeHistogram(fullData.data);
-  eqCtx.putImageData(fullData, 0, 0);
-
-  // Resize equalized image to grid
-  const tmp = document.createElement('canvas');
-  tmp.width = gridSize;
-  tmp.height = gridSize;
-  tmp.getContext('2d').drawImage(eq, 0, 0, gridSize, gridSize);
-  const data = tmp.getContext('2d').getImageData(0, 0, gridSize, gridSize).data;
-  const features = new Float32Array(gridSize * gridSize * 3);
-  for (let i = 0, j = 0; i < data.length; i += 4) {
-    features[j++] = data[i] / 255;
-    features[j++] = data[i + 1] / 255;
-    features[j++] = data[i + 2] / 255;
-  }
-  return features;
-}
-
-function cosineSimilarity(a, b) {
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom > 0 ? dot / denom : 0;
-}
 
 function rotateCanvas90(canvas) {
   const rot = document.createElement('canvas');
@@ -121,95 +68,30 @@ function cropRotated(img, cx, cy, w, h, angle) {
   return c;
 }
 
-// Artwork crop region (portrait card) — excludes frame, name bar, text/stats
-const ART_TOP = 0.05;
-const ART_BOTTOM = 0.55;
-const ART_LEFT = 0.05;
-const ART_RIGHT = 0.95;
-
-function cropArtwork(canvas) {
-  const w = canvas.width, h = canvas.height;
-  const sx = Math.round(w * ART_LEFT);
-  const sy = Math.round(h * ART_TOP);
-  const sw = Math.round(w * (ART_RIGHT - ART_LEFT));
-  const sh = Math.round(h * (ART_BOTTOM - ART_TOP));
-  const c = document.createElement('canvas');
-  c.width = sw;
-  c.height = sh;
-  c.getContext('2d').drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
-  return c;
-}
-
 function identifyCard(cropCanvas, matcher, setFilter = 'all') {
   if (!matcher || !matcher.cards || matcher.cards.length === 0) return null;
 
-  const art = cropArtwork(cropCanvas);
-  const artRotated = cropArtwork(rotateCanvas90(cropCanvas));
-  const candidateCards = filterCardsBySet(matcher.cards, setFilter);
-
-  const featNormal = computeColorGrid(art, matcher.gridSize);
-  const featRotated = computeColorGrid(artRotated, matcher.gridSize);
-
-  // Pure color grid ranking (most reliable for real photos)
-  const ranked = [];
-  for (const c of candidateCards) {
-    const s1 = cosineSimilarity(featNormal, c.f);
-    const s2 = cosineSimilarity(featRotated, c.f);
-    ranked.push({ card: c, sim: Math.max(s1, s2) });
+  // Camera and uploaded photos must use the same preprocessing and score.
+  // Keep the existing quarter-turn retry, merging candidates by card ID.
+  const byId = new Map();
+  for (const source of [cropCanvas, rotateCanvas90(cropCanvas)]) {
+    for (const entry of matcher.rank(source, { setFilter, limit: 3 })) {
+      const previous = byId.get(entry.card.id);
+      if (!previous || entry.similarity > previous.similarity) byId.set(entry.card.id, entry);
+    }
   }
-  ranked.sort((a, b) => b.sim - a.sim);
+  const ranked = [...byId.values()].sort((a, b) => b.similarity - a.similarity);
 
   const toCardData = (r) => ({
-    id: r.card.id,
-    name: r.card.name,
-    collectorNumber: ((r.card.code || '').split('/')[0].includes('-')
-      ? (r.card.code || '').split('/')[0].split('-').slice(1).join('-')
-      : String(r.card.number).padStart(3, '0')),
-    code: r.card.code,
-    set: r.card.set,
-    setName: r.card.setName,
-    domain: r.card.domain,
-    domains: r.card.domains,
-    rarity: r.card.rarity,
-    type: r.card.type,
-    energy: r.card.energy,
-    might: r.card.might,
-    tags: r.card.tags,
-    illustrator: r.card.illustrator,
-    text: r.card.text,
-    sim: (r.sim * 100).toFixed(1),
-    similarity: r.sim,
+    ...resolveCardData(r.card),
+    sim: (r.similarity * 100).toFixed(1),
+    similarity: r.similarity,
   });
 
   return {
     card: ranked[0]?.card || null,
-    similarity: ranked[0]?.sim || 0,
+    similarity: ranked[0]?.similarity || 0,
     top3: ranked.slice(0, 3).map(toCardData),
-  };
-}
-
-function resolveMatchCardData(det) {
-  const cardId = det.activeCardId || det.matchResult?.card?.id;
-  if (!cardId) return null;
-  const matchEntry = det.matchResult?.top3?.find(m => m.id === cardId);
-  if (!matchEntry) return null;
-  return {
-    id: matchEntry.id,
-    name: matchEntry.name,
-    collectorNumber: matchEntry.collectorNumber,
-    code: matchEntry.code,
-    set: matchEntry.set,
-    setName: matchEntry.setName,
-    domain: matchEntry.domain,
-    domains: matchEntry.domains,
-    rarity: matchEntry.rarity,
-    type: matchEntry.type,
-    energy: matchEntry.energy,
-    might: matchEntry.might,
-    tags: matchEntry.tags,
-    illustrator: matchEntry.illustrator,
-    text: matchEntry.text,
-    imageUrl: matchEntry.imageUrl,
   };
 }
 
@@ -266,34 +148,6 @@ function pendingToDetection(card) {
   };
 }
 
-function resolveMatcherCardData(card) {
-  if (!card) return null;
-
-  const codePart = (card.code || '').split('/')[0];
-  const collectorNumber = codePart.includes('-')
-    ? codePart.split('-').slice(1).join('-')
-    : String(card.number || '').padStart(3, '0');
-
-  return {
-    id: card.id,
-    name: card.name,
-    collectorNumber,
-    code: card.code,
-    set: card.set,
-    setName: card.setName,
-    domain: card.domain,
-    domains: card.domains,
-    rarity: card.rarity,
-    type: card.type,
-    energy: card.energy,
-    might: card.might,
-    tags: card.tags,
-    illustrator: card.illustrator,
-    text: card.text,
-    imageUrl: card.imageUrl,
-  };
-}
-
 // --- Component ---
 
 export default function ScanTab({
@@ -304,6 +158,7 @@ export default function ScanTab({
   recentPendingScanEvents = [],
   onAddPendingCard,
   onConfirmPending,
+  onUpdatePendingCard,
   onConfirmAllPending,
   onRemovePending,
   onAdjustPendingQuantity,
@@ -359,12 +214,11 @@ export default function ScanTab({
 
   const recentPendingCards = useMemo(() => {
     if (recentPendingScanEvents.length > 0) {
-      const pendingById = new Map(pendingCards.map((card) => [card.cardData.id, card]));
       return recentPendingScanEvents
         .slice(-3)
         .reverse()
         .map((event) => {
-          const card = pendingById.get(event.cardId);
+          const card = pendingCards.find((entry) => matchesPendingScan(event, entry));
           if (!card) return null;
           return {
             ...card,
@@ -415,7 +269,7 @@ export default function ScanTab({
   const manualSelectedFoilOnly = manualSelectedCard ? isFoilOnly(manualSelectedCard) : false;
 
   const selectManualCard = useCallback((card) => {
-    const cardData = resolveMatcherCardData(card);
+    const cardData = resolveCardData(card);
     if (!cardData) return;
     setManualSelectedCard(cardData);
     setManualQuantity(1);
@@ -650,7 +504,7 @@ export default function ScanTab({
   }, [pendingCards, pendingSort, priceByCardId]);
 
   const pendingCardIds = useMemo(
-    () => new Set(pendingCards.map(card => card.cardData.id)),
+    () => new Set(pendingCards.map(card => card.entryId)),
     [pendingCards]
   );
 
@@ -706,7 +560,7 @@ export default function ScanTab({
 
   // --- Upload mode handlers ---
 
-  const handleImageSelected = useCallback((file) => {
+  const handleImageSelected = (file) => {
     setFileName(file.name);
     setDetections([]);
     setSelectedDetection(null);
@@ -726,7 +580,7 @@ export default function ScanTab({
       }
     };
     img.src = URL.createObjectURL(file);
-  }, []);
+  };
 
   const runDetection = async (imageElement) => {
     setIsProcessing(true);
@@ -773,6 +627,11 @@ export default function ScanTab({
         results.push({
           cx: det.box.cx, cy: det.box.cy, w: det.box.w, h: det.box.h,
           angle: det.box.angle, confidence: det.confidence, cropCanvas: crop, matchResult,
+          entry: matchResult?.card ? createCardEntry({
+            cardData: resolveCardData(matchResult.card),
+            confidence: det.confidence,
+            similarity: matchResult.similarity,
+          }, batchDefaults) : null,
         });
       }
 
@@ -825,45 +684,24 @@ export default function ScanTab({
   }, [detections, checkedIndices]);
 
   const addCheckedToExport = useCallback(() => {
-    const cardDataArray = [];
-    for (const idx of checkedIndices) {
-      const det = detections[idx];
-      if (!det?.matchResult?.card) continue;
-      const cardData = resolveMatchCardData(det);
-      if (cardData) cardDataArray.push(cardData);
-    }
-    if (cardDataArray.length > 0) onAddCardsToExport(cardDataArray);
+    const entries = getSelectedDetectionEntries(detections, checkedIndices);
+    if (entries.length > 0) onAddCardsToExport(entries);
     setCheckedIndices(new Set());
   }, [checkedIndices, detections, onAddCardsToExport]);
 
   const exportCheckedCSV = useCallback(() => {
-    const exportCards = [];
-    for (const idx of checkedIndices) {
-      const det = detections[idx];
-      if (!det?.matchResult?.card) continue;
-      const cardData = resolveMatchCardData(det);
-      if (cardData) {
-        exportCards.push({
-          cardData, quantity: 1,
-          condition: batchDefaults.condition,
-          language: batchDefaults.language,
-          foil: batchDefaults.foil,
-        });
-      }
-    }
+    const exportCards = getSelectedDetectionEntries(detections, checkedIndices);
     if (exportCards.length === 0) { showNotification('Select at least one card', 'error'); return; }
     const { valid, errors } = validateForExport(exportCards, exportFormat);
-    if (!valid) { showNotification(`Error: ${errors[0]}`, 'error'); return; }
+    if (!valid) { showNotification('Error: ' + errors[0], 'error'); return; }
     downloadCSV(exportCards, null, exportFormat);
-    showNotification(`CSV exported — ${exportCards.length} cards`, 'success');
-  }, [checkedIndices, detections, batchDefaults, showNotification, exportFormat]);
+    showNotification('CSV exported — ' + exportCards.length + ' card rows', 'success');
+  }, [checkedIndices, detections, showNotification, exportFormat]);
 
-  const handleMatchChange = useCallback((detectionIndex, cardId) => {
-    setDetections(prev => {
-      const updated = [...prev];
-      updated[detectionIndex] = { ...updated[detectionIndex], activeCardId: cardId };
-      return updated;
-    });
+  const handleDetectionEntryChange = useCallback((index, patch) => {
+    setDetections((prev) => prev.map((det, i) => i === index
+      ? { ...det, entry: createCardEntry({ ...det.entry, ...patch }) }
+      : det));
   }, []);
 
   // --- Shared JSX ---
@@ -905,7 +743,11 @@ export default function ScanTab({
               onAddToScanner={handleAddToExport}
               isChecked={checkedIndices.has(idx)}
               onToggleCheck={() => toggleCheck(idx)}
-              onMatchChange={handleMatchChange}
+              entry={det.entry}
+              onEntryChange={(patch) => handleDetectionEntryChange(idx, patch)}
+              priceRecord={priceByCardId?.get(det.entry?.cardData.id) || null}
+              priceCurrency={priceCurrency}
+              priceExchangeRates={priceExchangeRates}
               color={color}
               isSelected={selectedDetection === idx}
               onSelect={() => setSelectedDetection(selectedDetection === idx ? null : idx)}
@@ -1024,6 +866,7 @@ export default function ScanTab({
             error={camera.error}
             isProcessing={detection.isProcessing}
             lastDetection={detection.lastDetection}
+            captureQuality={camera.captureQuality}
             onStartCamera={camera.startCamera}
             onStopCamera={camera.stopCamera}
             onToggleFacing={camera.toggleFacing}
@@ -1132,7 +975,7 @@ export default function ScanTab({
                     <div className="mt-3 grid gap-2">
                       {recentPendingCards.map((card) => (
                         <div
-                          key={`${card.cardData.id}-${card.recentScanTimestamp || card.scanTimestamp}`}
+                          key={`${card.entryId}-${card.recentScanTimestamp || card.scanTimestamp}`}
                           className="flex w-full min-w-0 items-center justify-between gap-3 rounded-lg border border-rift-600/30 bg-rift-800/70 px-3 py-2"
                         >
                           <div className="min-w-0 flex-1">
@@ -1189,16 +1032,18 @@ export default function ScanTab({
 
                 {sortedPendingCards.map((card, index) => (
                   <CardDetailPanel
-                    key={`${card.cardData.id}-${card.scanTimestamp}`}
+                    key={card.entryId}
                     detection={pendingToDetection(card)}
                     index={index}
-                    onAddToScanner={(payload) => onConfirmPending({ cardId: card.cardData.id, ...payload })}
-                    onRemove={() => onRemovePending(card.cardData.id)}
-                    onQuickAddDuplicate={() => onAdjustPendingQuantity?.(card.cardData.id, 1)}
-                    onQuickRemoveDuplicate={() => onAdjustPendingQuantity?.(card.cardData.id, -1)}
+                    entry={card}
+                    onEntryChange={(patch) => onUpdatePendingCard(card.entryId, patch)}
+                    onAddToScanner={() => onConfirmPending(card.entryId)}
+                    onRemove={() => onRemovePending(card.entryId)}
+                    onQuickAddDuplicate={() => onAdjustPendingQuantity?.(card.entryId, 1)}
+                    onQuickRemoveDuplicate={() => onAdjustPendingQuantity?.(card.entryId, -1)}
                     quantity={card.quantity}
-                    isChecked={checkedPendingIds.has(card.cardData.id)}
-                    onToggleCheck={() => togglePendingCheck(card.cardData.id)}
+                    isChecked={checkedPendingIds.has(card.entryId)}
+                    onToggleCheck={() => togglePendingCheck(card.entryId)}
                     priceRecord={priceByCardId?.get(card.cardData.id) || null}
                     priceCurrency={priceCurrency}
                     priceExchangeRates={priceExchangeRates}
@@ -1285,7 +1130,7 @@ export default function ScanTab({
                     <div className="mt-3 grid gap-2">
                       {recentPendingCards.map((card) => (
                         <div
-                          key={`${card.cardData.id}-${card.recentScanTimestamp || card.scanTimestamp}`}
+                          key={`${card.entryId}-${card.recentScanTimestamp || card.scanTimestamp}`}
                           className="flex w-full min-w-0 items-center justify-between gap-3 rounded-lg border border-rift-600/30 bg-rift-800/70 px-3 py-2"
                         >
                           <div className="min-w-0 flex-1">
@@ -1314,16 +1159,18 @@ export default function ScanTab({
                 )}
                 {sortedPendingCards.map((card, index) => (
                   <CardDetailPanel
-                    key={`${card.cardData.id}-${card.scanTimestamp}`}
+                    key={card.entryId}
                     detection={pendingToDetection(card)}
                     index={index}
-                    onAddToScanner={(payload) => onConfirmPending({ cardId: card.cardData.id, ...payload })}
-                    onRemove={() => onRemovePending(card.cardData.id)}
-                    onQuickAddDuplicate={() => onAdjustPendingQuantity?.(card.cardData.id, 1)}
-                    onQuickRemoveDuplicate={() => onAdjustPendingQuantity?.(card.cardData.id, -1)}
+                    entry={card}
+                    onEntryChange={(patch) => onUpdatePendingCard(card.entryId, patch)}
+                    onAddToScanner={() => onConfirmPending(card.entryId)}
+                    onRemove={() => onRemovePending(card.entryId)}
+                    onQuickAddDuplicate={() => onAdjustPendingQuantity?.(card.entryId, 1)}
+                    onQuickRemoveDuplicate={() => onAdjustPendingQuantity?.(card.entryId, -1)}
                     quantity={card.quantity}
-                    isChecked={checkedPendingIds.has(card.cardData.id)}
-                    onToggleCheck={() => togglePendingCheck(card.cardData.id)}
+                    isChecked={checkedPendingIds.has(card.entryId)}
+                    onToggleCheck={() => togglePendingCheck(card.entryId)}
                     priceRecord={priceByCardId?.get(card.cardData.id) || null}
                     priceCurrency={priceCurrency}
                     priceExchangeRates={priceExchangeRates}

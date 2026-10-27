@@ -7,10 +7,10 @@ use reqwest::blocking::Client;
 use serde::Serialize;
 use serde_json::Value;
 use std::{collections::HashSet, fs, path::Path, time::Duration};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use url::Url;
 
-const GALLERY_URL: &str = "https://riftbound.leagueoflegends.com/en-us/card-gallery/";
+const GALLERY_URL: &str = "https://playriftbound.com/en-us/card-gallery/";
 const GRID_SIZE: usize = 16;
 const ART_TOP: f32 = 0.05;
 const ART_BOTTOM: f32 = 0.55;
@@ -25,15 +25,51 @@ struct RuntimeInfo {
   platform: String,
   arch: String,
   desktop: bool,
+  storage: Option<StorageInfo>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageInfo {
+  cards_directory: String,
+  profile_directory: String,
+}
+
+fn card_cache_directory() -> Result<std::path::PathBuf, String> {
+  ProjectDirs::from("com", "Teme1999", "RiftboundScanner")
+    .map(|dirs| dirs.data_local_dir().join("cards"))
+    .ok_or_else(|| "Could not resolve the card data directory.".to_string())
 }
 
 #[tauri::command]
-fn runtime_info() -> RuntimeInfo {
+fn runtime_info(app: tauri::AppHandle) -> RuntimeInfo {
   RuntimeInfo {
     platform: std::env::consts::OS.to_string(),
     arch: std::env::consts::ARCH.to_string(),
     desktop: true,
+    storage: card_cache_directory().ok().zip(app.path().app_local_data_dir().ok())
+      .map(|(cards, profile)| StorageInfo {
+        cards_directory: cards.to_string_lossy().into_owned(),
+        profile_directory: profile.join("EBWebView").to_string_lossy().into_owned(),
+      }),
   }
+}
+
+#[tauri::command]
+fn open_storage_folder(app: tauri::AppHandle, folder: String) -> Result<(), String> {
+  let path = match folder.as_str() {
+    "cards" => card_cache_directory()?,
+    "profile" => app.path().app_local_data_dir().map_err(|error| error.to_string())?.join("EBWebView"),
+    _ => return Err("Unknown application data folder.".to_string()),
+  };
+  if !path.is_dir() { return Err("This data folder has not been created yet.".to_string()); }
+  #[cfg(target_os = "windows")]
+  {
+    std::process::Command::new("explorer.exe").arg(path).spawn()
+      .map(|_| ()).map_err(|error| format!("Could not open data folder: {}", error))
+  }
+  #[cfg(not(target_os = "windows"))]
+  { Err("Opening data folders is supported in the Windows desktop build.".to_string()) }
 }
 
 #[derive(Serialize)]
@@ -41,6 +77,8 @@ struct CardHashesDatabase {
   #[serde(rename = "gridSize")]
   grid_size: usize,
   cards: Vec<CardHashRecord>,
+  #[serde(rename = "skippedCards")]
+  skipped_cards: usize,
 }
 
 #[derive(Serialize)]
@@ -120,7 +158,12 @@ struct ExchangeRateInfo {
 }
 
 #[tauri::command]
-fn fetch_exchange_rates() -> Result<ExchangeRateInfo, String> {
+async fn fetch_exchange_rates() -> Result<ExchangeRateInfo, String> {
+  tauri::async_runtime::spawn_blocking(fetch_exchange_rates_blocking)
+    .await.map_err(|error| error.to_string())?
+}
+
+fn fetch_exchange_rates_blocking() -> Result<ExchangeRateInfo, String> {
   let client = Client::builder()
     .timeout(Duration::from_secs(30))
     .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -190,16 +233,16 @@ fn fetch_exchange_rates() -> Result<ExchangeRateInfo, String> {
 #[tauri::command]
 async fn update_card_database(
   app: tauri::AppHandle,
-  existing_set_codes: Vec<String>,
+  existing_card_ids: Vec<String>,
 ) -> Result<String, String> {
-  tauri::async_runtime::spawn_blocking(move || update_card_database_blocking(app, existing_set_codes))
+  tauri::async_runtime::spawn_blocking(move || update_card_database_blocking(app, existing_card_ids))
     .await
     .map_err(|error| format!("Card database update worker failed: {}", error))?
 }
 
 fn update_card_database_blocking(
   app: tauri::AppHandle,
-  existing_set_codes: Vec<String>,
+  existing_card_ids: Vec<String>,
 ) -> Result<String, String> {
   emit_card_database_progress(
     &app,
@@ -245,28 +288,12 @@ fn update_card_database_blocking(
     return Err("No cards were found in the Riot gallery data.".to_string());
   }
 
-  let existing_sets = existing_set_codes
-    .into_iter()
-    .map(|set| set.trim().to_uppercase())
-    .filter(|set| !set.is_empty())
-    .collect::<HashSet<_>>();
-  let gallery_set_codes = raw_cards
-    .iter()
-    .map(raw_card_set_id)
-    .filter(|set| !set.is_empty())
-    .collect::<HashSet<_>>();
-  let missing_set_codes = gallery_set_codes
-    .difference(&existing_sets)
-    .cloned()
+  let existing_ids = existing_card_ids.into_iter()
+    .map(|id| id.trim().to_string())
+    .filter(|id| !id.is_empty())
     .collect::<HashSet<_>>();
   let total_gallery_cards = raw_cards.len();
-  let raw_cards = raw_cards
-    .into_iter()
-    .filter(|raw_card| {
-      let set_id = raw_card_set_id(raw_card);
-      set_id.is_empty() || missing_set_codes.contains(&set_id)
-    })
-    .collect::<Vec<_>>();
+  let raw_cards = missing_gallery_cards(raw_cards, &existing_ids);
   let total_cards = raw_cards.len();
   emit_card_database_progress(
     &app,
@@ -278,9 +305,8 @@ fn update_card_database_blocking(
       )
     } else {
       format!(
-        "Found {} gallery cards across {} sets. Rebuilding {} cards from missing sets...",
+        "Found {} gallery cards. Downloading {} missing cards, including additions to existing sets...",
         total_gallery_cards,
-        gallery_set_codes.len(),
         total_cards
       )
     },
@@ -321,6 +347,7 @@ fn update_card_database_blocking(
   let database = CardHashesDatabase {
     grid_size: GRID_SIZE,
     cards,
+    skipped_cards: skipped,
   };
 
   emit_card_database_progress(
@@ -363,17 +390,12 @@ fn extract_next_data(html: &str) -> Result<Value, String> {
   serde_json::from_str(json_text).map_err(|error| format!("Failed to parse Riot gallery JSON: {}", error))
 }
 
-fn raw_card_set_id(raw: &Value) -> String {
-  raw
-    .get("set")
-    .and_then(Value::as_object)
-    .and_then(|set| set.get("value"))
-    .and_then(Value::as_object)
-    .and_then(|value| value.get("id"))
-    .and_then(Value::as_str)
-    .unwrap_or("")
-    .trim()
-    .to_uppercase()
+fn missing_gallery_cards(raw_cards: Vec<Value>, existing_ids: &HashSet<String>) -> Vec<Value> {
+  let mut seen_ids = HashSet::new();
+  raw_cards.into_iter().filter(|raw| {
+    let id = value_to_string(raw.get("id")).trim().to_string();
+    !id.is_empty() && !existing_ids.contains(&id) && seen_ids.insert(id)
+  }).collect()
 }
 
 fn extract_cards(next_data: &Value) -> Result<Vec<Value>, String> {
@@ -706,7 +728,41 @@ fn main() {
   tauri::Builder::default()
     .plugin(tauri_plugin_process::init())
     .plugin(tauri_plugin_updater::Builder::new().build())
-    .invoke_handler(tauri::generate_handler![runtime_info, update_card_database, fetch_exchange_rates, open_external_url])
+    .invoke_handler(tauri::generate_handler![runtime_info, update_card_database, fetch_exchange_rates, open_external_url, open_storage_folder])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use serde_json::json;
+
+  fn gallery_card(id: &str) -> Value {
+    json!({"id": id, "set": {"value": {"id": "RAD"}}})
+  }
+
+  #[test]
+  fn downloads_later_reveals_from_an_existing_set() {
+    let known = HashSet::from([String::from("rad-001")]);
+    let missing = missing_gallery_cards(vec![gallery_card("rad-001"), gallery_card("rad-002")], &known);
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0]["id"], "rad-002");
+  }
+
+  #[test]
+  fn retries_cards_that_failed_in_an_earlier_update() {
+    let gallery = vec![gallery_card("rad-001"), gallery_card("rad-002"), gallery_card("rad-003")];
+    let known = HashSet::from([String::from("rad-001"), String::from("rad-003")]);
+    let retry = missing_gallery_cards(gallery.clone(), &known);
+    assert_eq!(retry, vec![gallery_card("rad-002")]);
+    let complete = HashSet::from([String::from("rad-001"), String::from("rad-002"), String::from("rad-003")]);
+    assert!(missing_gallery_cards(gallery, &complete).is_empty());
+  }
+
+  #[test]
+  fn ignores_empty_ids_and_duplicate_gallery_rows() {
+    let missing = missing_gallery_cards(vec![json!({}), gallery_card(""), gallery_card("rad-001"), gallery_card("rad-001")], &HashSet::new());
+    assert_eq!(missing, vec![gallery_card("rad-001")]);
+  }
 }

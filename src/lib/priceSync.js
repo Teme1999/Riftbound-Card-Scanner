@@ -2,9 +2,13 @@ import { getMatcher } from './cardMatcher.js';
 import { getPriceRecord, loadPriceSyncMeta, replacePriceSnapshot } from './indexedDB.js';
 import { FALLBACK_EXCHANGE_RATE_DATE, FALLBACK_ECB_EUR_RATES, normalizeExchangeRates } from './priceFormat.js';
 
-export const PRICE_SOURCE_LABEL = 'cards.csv from cristian-bravo/riftbound-prices';
+export const PRICE_SOURCE_LABEL = 'TCGPlayer via cristian-bravo/riftbound-prices';
 export const PRICE_SOURCE_URL = 'https://raw.githubusercontent.com/cristian-bravo/riftbound-prices/main/cards.csv';
 export const ECB_EXCHANGE_RATE_URL = 'https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml';
+export const PRICE_MATCHING_VERSION = 2;
+export function isPriceSnapshotCurrent(metadata) {
+  return metadata?.matchingVersion === PRICE_MATCHING_VERSION;
+}
 
 export async function fetchPriceSnapshotCsvFromGithub(sourceUrl = PRICE_SOURCE_URL) {
   const response = await fetch(sourceUrl, { cache: 'no-store' });
@@ -58,7 +62,7 @@ async function resolveExchangeRates(options = {}) {
       exchangeRates,
       exchangeRateDate: options.exchangeRateDate || options.usdPerEurRateDate || null,
       exchangeRateSource: options.exchangeRateSource || options.usdPerEurRateSource || 'provided',
-      exchangeRateFallback: false,
+      exchangeRateFallback: Boolean(options.exchangeRateFallback ?? options.usdPerEurRateFallback),
     };
   }
 
@@ -103,8 +107,10 @@ function normalizeCollectorNumber(value) {
 }
 
 function parseMoney(value) {
-  const parsed = Number.parseFloat(String(value || '').replace(/[$,]/g, '').trim());
-  return Number.isFinite(parsed) ? parsed : null;
+  const text = String(value ?? '').trim().replace(/^\$/, '');
+  if (!/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(text)) return null;
+  const parsed = Number(text.replaceAll(',', ''));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function parseInteger(value) {
@@ -169,7 +175,13 @@ function parseCsv(text) {
     return [];
   }
 
+  if (inQuotes) throw new Error('Price CSV contains an unterminated quoted field.');
+
   const header = rows[0].map((value) => String(value || '').trim());
+  if (!['name', 'set', 'number'].every((key) => header.includes(key)) ||
+    !header.some((key) => key === 'price' || key === 'marketPrice')) {
+    throw new Error('Price CSV is missing name, set, number or price columns.');
+  }
   return rows.slice(1).map((values) => {
     const entry = {};
     header.forEach((key, index) => {
@@ -180,89 +192,41 @@ function parseCsv(text) {
 }
 
 function buildCardIndex(cards = []) {
-  const nameIndex = new Map();
-
+  const printIndex = new Map();
   for (const card of cards) {
-    const name = normalizeText(card.name);
-    if (!name) {
-      continue;
+    const number = normalizeCollectorNumber(card.code || card.collectorNumber || card.number);
+    if (!number) continue;
+    for (const set of new Set([card.set, card.setName].map(normalizeSet).filter(Boolean))) {
+      const key = `${set}|${number}`;
+      if (!printIndex.has(key)) printIndex.set(key, []);
+      printIndex.get(key).push(card);
     }
-
-    if (!nameIndex.has(name)) {
-      nameIndex.set(name, []);
-    }
-
-    nameIndex.get(name).push(card);
   }
-
-  return nameIndex;
+  return printIndex;
 }
 
-function scoreCardMatch(card, row) {
-  let score = 0;
-
-  const cardName = normalizeText(card.name);
-  const rowName = normalizeText(row.name);
-  const cardSets = [card.set, card.setName]
-    .map(normalizeText)
-    .filter(Boolean);
-  const rowSet = normalizeText(row.set);
-  const cardNumber = normalizeCollectorNumber(card.code || card.collectorNumber || card.number);
-  const rowNumber = normalizeCollectorNumber(row.number);
-  const nameMatches = cardName && rowName && cardName === rowName;
-  const setMatches = !rowSet || cardSets.includes(rowSet);
-  const numberMatches = !rowNumber || (cardNumber && cardNumber === rowNumber);
-  const rarityMatches = normalizeText(card.rarity) === normalizeText(row.rarity);
-
-  if (nameMatches) {
-    score += 100;
-  } else if (cardName && rowName && (cardName.includes(rowName) || rowName.includes(cardName))) {
-    score += 20;
-  }
-
-  if (rowSet && setMatches) {
-    score += 80;
-  }
-
-  if (rowNumber && numberMatches) {
-    score += 80;
-  }
-
-  if (row.rarity && rarityMatches) {
-    score += 10;
-  }
-
-  return {
-    card,
-    score,
-    nameMatches,
-    setMatches,
-    numberMatches,
-  };
+function normalizeSet(value) {
+  const normalized = normalizeText(value);
+  // The official gallery and TCGPlayer use different names for this same set.
+  return normalized === 'ORIGINS PROVING GROUNDS' ? 'PROVING GROUNDS' : normalized;
 }
 
-function resolveCardForRow(row, cards, nameIndex) {
-  const normalizedName = normalizeText(row.name);
-  const indexedCards = normalizedName ? (nameIndex.get(normalizedName) || []) : [];
-  const candidates = indexedCards.length > 0 ? indexedCards : cards;
+function priceNameAliases(name) {
+  // The gallery often omits champion subtitles and TCGPlayer adds printing
+  // labels in parentheses. These aliases are used only AFTER exact set and
+  // collector identity, never for fuzzy cross-print matching.
+  const plain = String(name || '').replace(/(?:\s+\([^()]*\))+$/, '');
+  return new Set([name, plain, plain.split(',')[0]].map(normalizeText).filter(Boolean));
+}
 
-  const matches = candidates
-    .map((card) => scoreCardMatch(card, row))
-    .filter((match) => match.nameMatches && (match.setMatches || match.numberMatches))
-    .sort((left, right) => right.score - left.score);
-
-  if (matches.length === 0) {
-    return null;
-  }
-
-  const bestMatch = matches[0];
-  const tiedMatch = matches[1] && matches[1].score === bestMatch.score;
-
-  if (tiedMatch) {
-    return null;
-  }
-
-  return bestMatch.card;
+function resolveCardForRow(row, printIndex) {
+  const names = priceNameAliases(row.name);
+  const set = normalizeSet(row.set), number = normalizeCollectorNumber(row.number);
+  if (!names.size || !set || !number) return null;
+  const matches = (printIndex.get(`${set}|${number}`) || [])
+    .filter((card) => [...priceNameAliases(card.name)].some((name) => names.has(name)));
+  // Never guess between printings or cross a set/collector-number mismatch.
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function normalizePriceRow(row) {
@@ -279,10 +243,8 @@ function normalizePriceRow(row) {
   };
 }
 
-export async function importPriceSnapshotCsv(csvText, options = {}) {
+export function buildPriceSnapshot(csvText, cards) {
   const rows = parseCsv(csvText).map(normalizePriceRow).filter((row) => row.name && row.set);
-  const matcher = options.matcher || getMatcher();
-  const cards = options.cards || matcher.cards || [];
 
   if (cards.length === 0) {
     throw new Error('The local card database is not loaded yet.');
@@ -294,13 +256,21 @@ export async function importPriceSnapshotCsv(csvText, options = {}) {
 
   const nameIndex = buildCardIndex(cards);
   const recordsByCardId = new Map();
+  const conflictingIds = new Set();
   let unmatched = 0;
+  let unpriced = 0;
 
   for (const row of rows) {
-    const matchedCard = resolveCardForRow(row, cards, nameIndex);
+    const matchedCard = resolveCardForRow(row, nameIndex);
     if (!matchedCard) {
       unmatched += 1;
       continue;
+    }
+
+    if (row.price == null && row.marketPrice == null) { unpriced++; continue; }
+    const previous = recordsByCardId.get(matchedCard.id);
+    if (previous && (previous.price !== row.price || previous.marketPrice !== row.marketPrice)) {
+      conflictingIds.add(matchedCard.id);
     }
 
     recordsByCardId.set(matchedCard.id, {
@@ -318,16 +288,31 @@ export async function importPriceSnapshotCsv(csvText, options = {}) {
       marketPrice: row.marketPrice,
       availability: row.availability,
       updatedAt: row.updatedAt,
+      source: PRICE_SOURCE_LABEL,
+      priceCurrency: 'USD',
+      variantSpecific: false,
       importedAt: new Date().toISOString(),
     });
   }
 
-  const records = [...recordsByCardId.values()];
+  const records = [...recordsByCardId.values()].filter((record) => !conflictingIds.has(record.cardId));
 
   if (records.length === 0) {
     throw new Error('No cards from the price snapshot matched the local card database.');
   }
 
+  const sourceDates = records.map((record) => {
+    const date = record.updatedAt.match(/(?:^|\s)(\d{2})\/(\d{2})\/(\d{4})$/);
+    return date ? `${date[3]}-${date[2]}-${date[1]}` : null;
+  }).filter(Boolean).sort();
+  return { records, totalRows: rows.length, matchedRows: records.length, unmatchedRows: unmatched,
+    unpricedRows: unpriced, conflictingCards: conflictingIds.size,
+    sourceOldestDate: sourceDates[0] || null, sourceNewestDate: sourceDates.at(-1) || null };
+}
+
+export async function importPriceSnapshotCsv(csvText, options = {}) {
+  const cards = options.cards || (options.matcher || getMatcher()).cards || [];
+  const { records, ...statistics } = buildPriceSnapshot(csvText, cards);
   const exchangeRate = await resolveExchangeRates(options);
   const exchangeRates = normalizeExchangeRates(exchangeRate.exchangeRates);
 
@@ -345,16 +330,14 @@ export async function importPriceSnapshotCsv(csvText, options = {}) {
     usdPerEurRateSource: exchangeRate.exchangeRateSource,
     usdPerEurRateFallback: exchangeRate.exchangeRateFallback,
     importedAt: new Date().toISOString(),
-    totalRows: rows.length,
-    matchedRows: records.length,
-    unmatchedRows: unmatched,
+    variantSpecific: false,
+    matchingVersion: PRICE_MATCHING_VERSION,
+    ...statistics,
   });
 
   return {
     snapshot,
-    totalRows: rows.length,
-    matchedRows: records.length,
-    unmatchedRows: unmatched,
+    ...statistics,
     exchangeRate,
   };
 }

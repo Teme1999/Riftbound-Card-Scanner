@@ -1,110 +1,71 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { openCameraStream, applyCameraAutoModes, supportsTorch } from '../lib/cameraControls.js';
+import { getVideoScanRegion } from '../lib/scanGeometry.js';
+import { BestFrameBuffer, readCanvasQuality } from '../lib/scanQuality.js';
 
 /**
  * Hook for managing camera access and video streaming
  */
-export function useCamera({ deviceId = '' } = {}) {
+export function useCamera({ deviceId = '', profile = 'auto' } = {}) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
-  const cameraConfigRef = useRef({ deviceId, facingMode: 'environment' });
+  const cameraConfigRef = useRef({ deviceId, profile, facingMode: 'environment' });
   const [isActive, setIsActive] = useState(false);
   const [error, setError] = useState(null);
   const [facingMode, setFacingMode] = useState('environment'); // 'user' | 'environment'
   const [capabilities, setCapabilities] = useState(null);
   const [torchOn, setTorchOn] = useState(false);
-
-  const applyFocusConstraints = useCallback(async (track) => {
-    if (!track?.applyConstraints) return false;
-
-    const supportedConstraints = navigator.mediaDevices?.getSupportedConstraints?.() || {};
-    const trackCapabilities = track.getCapabilities?.() || {};
-    const canUseFocusMode = Boolean(supportedConstraints.focusMode || trackCapabilities.focusMode);
-    const canUsePointsOfInterest = Boolean(supportedConstraints.pointsOfInterest || trackCapabilities.pointsOfInterest);
-
-    const attempts = [];
-
-    if (canUseFocusMode && canUsePointsOfInterest) {
-      attempts.push({ advanced: [{ focusMode: 'continuous', pointsOfInterest: [{ x: 0.5, y: 0.5 }] }] });
-    }
-
-    if (canUseFocusMode) {
-      attempts.push({ advanced: [{ focusMode: 'continuous' }] });
-      attempts.push({ focusMode: 'continuous' });
-    }
-
-    if (canUsePointsOfInterest) {
-      attempts.push({ advanced: [{ pointsOfInterest: [{ x: 0.5, y: 0.5 }] }] });
-    }
-
-    for (const constraints of attempts) {
-      try {
-        await track.applyConstraints(constraints);
-        return true;
-      } catch {
-        // Try the next best-effort focus constraint.
-      }
-    }
-
-    return false;
-  }, []);
+  const [settings, setSettings] = useState(null);
+  const [captureQuality, setCaptureQuality] = useState(null);
+  const frameBufferRef = useRef(new BestFrameBuffer());
+  const frameSequenceRef = useRef(0);
+  const requestRef = useRef(0);
 
   const startCamera = useCallback(async () => {
+    const request = ++requestRef.current;
     try {
       setError(null);
-
-      // Stop any existing stream
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
-      }
-
-      const constraints = {
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 },
-        },
-        audio: false,
-      };
-
-      if (deviceId) {
-        constraints.video.deviceId = { exact: deviceId };
-      } else {
-        constraints.video.facingMode = { ideal: facingMode };
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      frameBufferRef.current.clear();
+      setCaptureQuality(null);
+      const stream = await openCameraStream(navigator.mediaDevices, { deviceId, facingMode, profile });
+      if (request !== requestRef.current) { stream.getTracks().forEach((track) => track.stop()); return; }
       streamRef.current = stream;
-
+      const track = stream.getVideoTracks()[0];
+      const appliedSettings = await applyCameraAutoModes(track);
+      if (request !== requestRef.current) { stream.getTracks().forEach((item) => item.stop()); return; }
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
-
-      // Get track capabilities
-      const track = stream.getVideoTracks()[0];
-      if (track) {
-        const caps = track.getCapabilities?.();
-        setCapabilities(caps || null);
-        await applyFocusConstraints(track);
-      }
-
+      if (request !== requestRef.current) return;
+      setCapabilities(track?.getCapabilities?.() || null);
+      setSettings(appliedSettings);
       setTorchOn(false);
       setIsActive(true);
     } catch (err) {
+      if (request !== requestRef.current) return;
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
       console.error('[Camera] Error:', err);
       setError(getErrorMessage(err));
+      setSettings(null);
       setIsActive(false);
     }
-  }, [deviceId, facingMode]);
+  }, [deviceId, facingMode, profile]);
 
   const refocus = useCallback(async () => {
-    if (!streamRef.current) return false;
-    const track = streamRef.current.getVideoTracks()[0];
-    if (!track) return false;
-    return applyFocusConstraints(track);
-  }, [applyFocusConstraints]);
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return;
+    setSettings(await applyCameraAutoModes(track, { focusOnly: true }));
+  }, []);
 
   const stopCamera = useCallback(() => {
+    requestRef.current++;
+    frameBufferRef.current.clear();
+    setCaptureQuality(null);
+    setSettings(null);
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
@@ -121,7 +82,7 @@ export function useCamera({ deviceId = '' } = {}) {
     const track = streamRef.current.getVideoTracks()[0];
     if (!track) return;
     const caps = track.getCapabilities?.();
-    if (!caps?.torch) return;
+    if (!supportsTorch(caps)) return;
     const next = !torchOn;
     try {
       await track.applyConstraints({ advanced: [{ torch: next }] });
@@ -139,42 +100,63 @@ export function useCamera({ deviceId = '' } = {}) {
   // Restart camera only when an active stream's selected camera changes.
   useEffect(() => {
     const previous = cameraConfigRef.current;
-    const changed = previous.deviceId !== deviceId || previous.facingMode !== facingMode;
-    cameraConfigRef.current = { deviceId, facingMode };
+    const changed = previous.deviceId !== deviceId || previous.facingMode !== facingMode || previous.profile !== profile;
+    cameraConfigRef.current = { deviceId, facingMode, profile };
 
     if (isActive && changed) {
       startCamera();
     }
-  }, [deviceId, facingMode, isActive, startCamera]);
+  }, [deviceId, facingMode, profile, isActive, startCamera]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      requestRef.current++;
+      frameBufferRef.current.clear();
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(t => t.stop());
       }
     };
   }, []);
 
-  /**
-   * Capture current frame as canvas
-   */
-  const captureFrame = useCallback(() => {
-    if (!videoRef.current || !isActive) return null;
-
+  const sampleFrame = useCallback(() => {
     const video = videoRef.current;
-    if (!video.videoWidth || !video.videoHeight) return null;
-
+    if (!streamRef.current || !video?.videoWidth || !video.videoHeight) return null;
+    const buffer = frameBufferRef.current;
+    if (buffer.lastVideoTime === video.currentTime) return null;
+    const region = getVideoScanRegion(video.videoWidth, video.videoHeight, video.clientWidth, video.clientHeight);
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0);
-    return canvas;
-  }, [isActive]);
+    canvas.width = region.width;
+    canvas.height = region.height;
+    canvas.getContext('2d').drawImage(video, region.x, region.y, region.width, region.height, 0, 0, canvas.width, canvas.height);
+    const quality = readCanvasQuality(canvas, region.guide);
+    const frame = { canvas, quality, region, frameId: ++frameSequenceRef.current, capturedAt: Date.now(), layoutKey: JSON.stringify(region) };
+    buffer.add(frame);
+    buffer.lastVideoTime = video.currentTime;
+    canvas.scanRegion = region;
+    canvas.frameId = frame.frameId;
+    canvas.capturedAt = frame.capturedAt;
+    canvas.scanMoving = frame.moving;
+    canvas.scanQuality = quality;
+    const issue = frame.moving ? 'moving' : quality.issue;
+    setCaptureQuality((previous) => previous?.issue === issue ? previous : { issue });
+    return frame;
+  }, []);
 
-  const hasTorch = !!(capabilities?.torch);
-  const hasFocusControl = !!(capabilities?.focusMode || capabilities?.focusDistance || capabilities?.pointsOfInterest);
+  useEffect(() => {
+    if (!isActive) return undefined;
+    const timer = setInterval(() => { sampleFrame(); }, 100);
+    return () => clearInterval(timer);
+  }, [isActive, sampleFrame]);
+
+  const captureFrame = useCallback(() => {
+    if (!isActive || !videoRef.current) return null;
+    sampleFrame();
+    return frameBufferRef.current.best(Date.now())?.canvas || null;
+  }, [isActive, sampleFrame]);
+
+  const hasTorch = supportsTorch(capabilities);
+  const hasFocusControl = capabilities?.focusMode?.includes?.('continuous') === true;
 
   return {
     videoRef,
@@ -182,6 +164,8 @@ export function useCamera({ deviceId = '' } = {}) {
     error,
     facingMode,
     capabilities,
+    settings,
+    captureQuality,
     hasTorch,
     hasFocusControl,
     torchOn,

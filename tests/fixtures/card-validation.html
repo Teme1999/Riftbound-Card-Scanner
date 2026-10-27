@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Card asset validation</title>
+<style>
+body { background:#10151e; color:#eee; font:15px system-ui; max-width:1000px; margin:32px auto; }
+button { padding:12px; font:inherit; } canvas { max-width:200px; max-height:280px; }
+pre { white-space:pre-wrap; overflow-wrap:anywhere; } section { display:flex; gap:24px; align-items:start; }
+table { border-collapse:collapse; margin:20px 0; } td, th { padding:6px 14px; text-align:right; border-bottom:1px solid #465061; } td:first-child, th:first-child { text-align:left; }
+</style>
+<h1>Card asset validation</h1>
+<p>Synthetic reference images only. This does not measure real camera accuracy. No collection or imported database is modified.</p>
+<button id="run">Run scanner checks</button>
+<p id="status" role="status">Ready</p>
+<div id="summary"></div>
+<section><canvas id="preview"></canvas><pre id="report"></pre></section>
+<script type="module">
+import CardMatcher from '/src/lib/cardMatcher.js';
+import YOLODetector from '/src/lib/yoloDetector.js';
+import { readCanvasQuality, isReliableScanResult } from '/src/lib/scanQuality.js';
+import { selectGuideDetection } from '/src/lib/scanGeometry.js';
+
+const status = document.querySelector('#status'), output = document.querySelector('#report');
+const preview = document.querySelector('#preview');
+function canvas(width, height) { const c = document.createElement('canvas'); c.width = width; c.height = height; return c; }
+function altered(image, scenario, seed) {
+  const c = canvas(360, 504), ctx = c.getContext('2d', { willReadFrequently: true });
+  if (scenario === 'low-resolution') {
+    const small = canvas(80, 112); small.getContext('2d').drawImage(image, 0, 0, 80, 112);
+    ctx.drawImage(small, 0, 0, c.width, c.height);
+  } else ctx.drawImage(image, 0, 0, c.width, c.height);
+  if (['dim-noise', 'warm', 'very-dark', 'shadow'].includes(scenario)) {
+    const data = ctx.getImageData(0, 0, c.width, c.height);
+    for (let i = 0; i < data.data.length; i += 4) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      const noise = (seed / 4294967296 - 0.5) * (scenario === 'very-dark' ? 2 : 8);
+      for (let ch = 0; ch < 3; ch++) {
+        const factor = scenario === 'very-dark' ? 0.025 : scenario === 'dim-noise' ? 0.35
+          : scenario === 'warm' ? [1.1, 0.9, 0.65][ch] : ((i / 4) % c.width < c.width / 2 ? 0.35 : 1);
+        data.data[i + ch] = data.data[i + ch] * factor + (scenario === 'warm' || scenario === 'shadow' ? 0 : noise);
+      }
+    }
+    ctx.putImageData(data, 0, 0);
+  }
+  if (scenario === 'glare') {
+    ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.ellipse(180, 150, 48, 65, -0.5, 0, Math.PI * 2); ctx.fill();
+  }
+  return c;
+}
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+function record(stats, expected, source, matcher) {
+  stats.total++;
+  const quality = readCanvasQuality(source), result = matcher.identify(source);
+  if (!quality.acceptable) stats.qualityRejected++;
+  const correct = result?.card.id === expected.id;
+  if (correct) stats.correctTop1++;
+  const reliable = isReliableScanResult({ cardData: result?.card, quality, matched: true,
+    similarity: result?.similarity, similarityGap: result ? result.similarity - result.secondBestSim : 0 });
+  if (reliable) stats.accepted++;
+  if (reliable && !correct) {
+    stats.wrongAccepted++;
+    if (stats.examples.length < 8) stats.examples.push({ expected: expected.id, actual: result.card.id, similarity: result.similarity });
+  }
+}
+const statistics = () => ({ total:0, correctTop1:0, accepted:0, wrongAccepted:0, qualityRejected:0, examples:[] });
+document.querySelector('#run').onclick = async () => {
+  document.querySelector('#run').disabled = true;
+  const report = { type:'synthetic-reference-regression', sets:{}, clean:statistics(), scenarios:{}, detector:statistics(), missing:[], rejectedClean:[] };
+  let detector;
+  try {
+    const db = await (await fetch('/card-hashes.json')).json();
+    const matcher = new CardMatcher(); matcher._applyDatabase(db);
+    const scenarios = ['dim-noise', 'warm', 'low-resolution', 'very-dark', 'shadow', 'glare'];
+    for (const name of scenarios) report.scenarios[name] = statistics();
+    const detectorCards = [];
+    const detectorIds = new Set(['RAD', 'VEN'].flatMap((set) => {
+      const cards = db.cards.filter((card) => card.set === set);
+      return Array.from({ length:12 }, (_, i) => cards[Math.floor(i * cards.length / 12)]?.id);
+    }));
+    const detectorOnly = new URL(location.href).searchParams.has('detectorOnly');
+    report.detectorOnly = detectorOnly;
+    let batch = [];
+    for (const [index, card] of db.cards.entries()) {
+      if (index % 16 === 0) {
+        status.textContent = `Loading reference images ${index + 1}/${db.cards.length}`;
+        batch = await Promise.all(db.cards.slice(index, index + 16).map(async (entry) => {
+          if (detectorOnly && !detectorIds.has(entry.id)) return null;
+          const image = new Image(); image.src = `/cards/${entry.id}.webp`;
+          try { await image.decode(); return image; } catch { return null; }
+        }));
+      }
+      report.sets[card.set] = (report.sets[card.set] || 0) + 1;
+      if (detectorOnly && !detectorIds.has(card.id)) continue;
+      const image = batch[index % 16];
+      if (!image) { report.missing.push(card.id); continue; }
+      const clean = altered(image, 'clean', index + 1);
+      if (!detectorOnly) record(report.clean, card, clean, matcher);
+      if (!readCanvasQuality(clean).acceptable) report.rejectedClean.push(card.id);
+      if (['RAD', 'VEN'].includes(card.set)) {
+        if (!detectorOnly) for (const scenario of scenarios) record(report.scenarios[scenario], card, altered(image, scenario, index + 1), matcher);
+        if (detectorIds.has(card.id)) detectorCards.push({ card, image });
+      }
+      if (index % 8 === 0) { status.textContent = `Matching reference ${index + 1}/${db.cards.length}`; await tick(); }
+    }
+    detector = new YOLODetector();
+    status.textContent = 'Loading the real quantized ONNX detector'; await tick();
+    await detector.initialize('quantized');
+    report.detector.samples = [];
+    for (const { card, image } of detectorCards) for (const scenario of ['clean', 'dim-noise', 'low-resolution']) {
+      const source = canvas(480, 640), ctx = source.getContext('2d');
+      ctx.fillStyle = '#343a41'; ctx.fillRect(0, 0, 480, 640);
+      ctx.drawImage(altered(image, scenario, 42), 60, 68, 360, 504);
+      source.scanRegion = { guide: { x:40, y:40, width:400, height:560 } };
+      const found = selectGuideDetection(await detector.detect(source), source.scanRegion.guide);
+      if (found) record(report.detector, card, found.cropCanvas, matcher);
+      else { report.detector.total++; report.detector.missed = (report.detector.missed || 0) + 1; }
+      report.detector.samples.push({ id:card.id, scenario, detected:Boolean(found), box:found?.box,
+        cropSize:found && [found.cropCanvas.width, found.cropCanvas.height], actual:found && matcher.identify(found.cropCanvas)?.card.id });
+      preview.width = source.width; preview.height = source.height; preview.getContext('2d').drawImage(source, 0, 0);
+      status.textContent = `Detector ${report.detector.total}/${detectorCards.length * 3}: ${card.id} ${scenario}`; await tick();
+    }
+    report.checksPassed = !report.missing.length && !report.rejectedClean.length &&
+      report.sets.RAD >= 219 && report.sets.VEN >= 237 &&
+      report.clean.wrongAccepted === 0 && Object.values(report.scenarios).every((s) => s.wrongAccepted === 0) &&
+      report.scenarios['very-dark'].qualityRejected === report.scenarios['very-dark'].total &&
+      report.detector.wrongAccepted === 0 && report.detector.accepted > 0;
+    status.textContent = report.checksPassed ? 'PASS - synthetic checks complete' : 'FAIL - inspect report';
+  } catch (error) { report.error = error.stack || String(error); status.textContent = 'FAIL - exception'; }
+  finally {
+    detector?.dispose(); output.textContent = JSON.stringify(report, null, 2);
+    const rows = [['All clean references', report.clean], ...Object.entries(report.scenarios), ['ONNX + matcher', report.detector]];
+    const table = document.createElement('table');
+    for (const values of [['Scenario', 'Inputs', 'Correct top 1', 'Accepted', 'Wrong accepted', 'Quality rejected'],
+      ...rows.map(([label, s]) => [label, s.total, s.correctTop1, s.accepted, s.wrongAccepted, s.qualityRejected])]) {
+      const row = table.insertRow(); for (const value of values) row.insertCell().textContent = value;
+    }
+    document.querySelector('#summary').replaceChildren(table);
+    document.querySelector('#run').disabled = false;
+  }
+};
+</script>
+</html>

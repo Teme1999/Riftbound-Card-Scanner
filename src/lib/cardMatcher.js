@@ -1,11 +1,12 @@
 /**
- * Card Matcher — Identifies detected cards using color grid cosine similarity.
+ * Card Matcher — Identifies cards using artwork color and spatial correlation.
  * Used by both camera mode (useCardDetection) and upload mode (ScanTab).
  */
 
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { loadMatcherDatabase, saveMatcherDatabase } from './indexedDB.js';
 import { isDesktopRuntime, resolveAppUrl } from './runtime.js';
+import { describeFeatures, compareFeatures } from './cardSimilarity.js';
 
 const HASHES_URL = resolveAppUrl(`/card-hashes.json?v=${__BUILD_TIME__}`);
 const isDevelopment = import.meta.env.DEV;
@@ -109,6 +110,15 @@ export function filterCardsBySet(cards, setFilter) {
   return cards.filter((card) => selectedSetLookup.has(String(card.set || '').toUpperCase()));
 }
 
+// Supplement an imported database after an app update, preserving newer local
+// records and image paths. Different feature grids cannot be mixed.
+export function supplementWithBundledCards(local, bundled) {
+  if (local.gridSize !== bundled.gridSize) return local;
+  const ids = new Set(local.cards.map((card) => card.id));
+  const missing = bundled.cards.filter((card) => !ids.has(card.id));
+  return missing.length ? { ...local, cards: [...local.cards, ...missing] } : local;
+}
+
 class CardMatcher {
   constructor() {
     this.cards = [];
@@ -127,43 +137,52 @@ class CardMatcher {
     this.databaseUpdatedAt = null;
     this.databaseSetCoverage = summarizeMatcherSets();
 
+    let localDatabase = null;
     try {
-      const localDatabase = await loadMatcherDatabase();
+      localDatabase = await loadMatcherDatabase();
       if (localDatabase) {
         this._applyDatabase(localDatabase.database);
         this.databaseSource = 'local';
         this.databaseUpdatedAt = localDatabase.updatedAt || null;
         debugLog(`[CardMatcher] Loaded ${this.cards.length} cards from local database (${this.gridSize}x${this.gridSize} grid)`);
-        return;
       }
     } catch (error) {
+      localDatabase = null;
       console.warn('[CardMatcher] Could not load local database, falling back to bundled asset:', error);
     }
 
-    let resp;
     try {
-      resp = await fetch(HASHES_URL);
+      const resp = await fetch(HASHES_URL);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      if (localDatabase) {
+        const supplemented = supplementWithBundledCards(localDatabase.database, data);
+        if (supplemented !== localDatabase.database) {
+          this._applyDatabase(supplemented);
+          const saved = await saveMatcherDatabase(supplemented);
+          this.databaseUpdatedAt = saved.updatedAt || this.databaseUpdatedAt;
+        }
+      } else {
+        this._applyDatabase(data);
+        debugLog(`[CardMatcher] Loaded ${this.cards.length} cards from bundled asset (${this.gridSize}x${this.gridSize} grid)`);
+      }
     } catch (error) {
+      // Offline/missing bundles or a full local store must not hide a usable
+      // imported database (including additions already loaded in memory).
+      if (this.ready) {
+        console.warn('[CardMatcher] Could not synchronize bundled cards:', error);
+        return;
+      }
       throw new Error('Missing card hash database at /card-hashes.json. Use the Update Card Database button to import a generated card-hashes.json file from this PC.');
     }
-
-    if (!resp.ok) {
-      throw new Error(`Missing card hash database at /card-hashes.json (HTTP ${resp.status}). Use the Update Card Database button to import a generated card-hashes.json file from this PC.`);
-    }
-
-    const data = await resp.json();
-    this._applyDatabase(data);
-    this.databaseSource = 'bundled';
-    debugLog(`[CardMatcher] Loaded ${this.cards.length} cards from bundled asset (${this.gridSize}x${this.gridSize} grid)`);
   }
 
   _applyDatabase(database) {
+    this._tmpCanvas = null;
     this.gridSize = database.gridSize;
     this.cards = (database.cards || []).map((card) => {
       const f = card.f instanceof Float32Array ? card.f : new Float32Array(card.f);
-      let normSq = 0;
-      for (let i = 0; i < f.length; i++) normSq += f[i] * f[i];
-      return { ...card, f, norm: Math.sqrt(normSq) };
+      return { ...card, f, featureStats: describeFeatures(f) };
     });
     this.databaseSetCoverage = summarizeMatcherSets(this.cards);
     this.ready = true;
@@ -183,36 +202,36 @@ class CardMatcher {
   }
 
   /**
-   * Identify a card from a cropped canvas using color grid similarity.
+   * Identify a card from a cropped canvas using the shared artwork ranking.
    *
    * @param {HTMLCanvasElement} cropCanvas - De-rotated card crop
    * @returns {{ card: object, similarity: number, secondBestSim: number } | null}
    */
   identify(cropCanvas, options = {}) {
-    if (!this.ready || this.cards.length === 0) return null;
+    const ranked = this.rank(cropCanvas, { ...options, limit: 2 });
+    return ranked.length ? { ...ranked[0], secondBestSim: ranked[1]?.similarity ?? 0 } : null;
+  }
 
-    const candidateCards = filterCardsBySet(this.cards, options.setFilter);
-    if (candidateCards.length === 0) return null;
+  rank(cropCanvas, options = {}) {
+    if (!this.ready || !this.cards.length) return [];
+    return this.rankFeatures(this._computeColorGrid(this._cropArtwork(cropCanvas)), options);
+  }
 
-    const art = this._cropArtwork(cropCanvas);
-    const features = this._computeColorGrid(art);
-    const featureNorm = this._vectorNorm(features);
-    if (featureNorm <= 0) return null;
-
-    let bestCard = null;
-    let bestSim = -1;
-    let secondBestSim = -1;
-    for (const card of candidateCards) {
-      const sim = this._cosineSimilarity(features, card.f, featureNorm, card.norm);
-      if (sim > bestSim) {
-        secondBestSim = bestSim;
-        bestSim = sim;
-        bestCard = card;
-      } else if (sim > secondBestSim) {
-        secondBestSim = sim;
-      }
+  rankFeatures(features, { setFilter, limit = 3 } = {}) {
+    if (!this.ready) return [];
+    const featureStats = describeFeatures(features);
+    if (!featureStats || featureStats.structureNorm < 1e-8) return [];
+    const ranked = [];
+    for (const card of filterCardsBySet(this.cards, setFilter)) {
+      if (!card.featureStats || card.f.length !== features.length) continue;
+      const scores = compareFeatures(features, card.f, featureStats, card.featureStats);
+      const entry = { card, ...scores };
+      const index = ranked.findIndex((candidate) => candidate.similarity < entry.similarity);
+      if (index >= 0) ranked.splice(index, 0, entry);
+      else if (ranked.length < limit) ranked.push(entry);
+      if (ranked.length > limit) ranked.length = limit;
     }
-    return bestCard ? { card: bestCard, similarity: bestSim, secondBestSim } : null;
+    return ranked;
   }
 
   _cropArtwork(canvas) {
@@ -277,22 +296,6 @@ class CardMatcher {
     return features;
   }
 
-  _vectorNorm(vector) {
-    let normSq = 0;
-    for (let i = 0; i < vector.length; i++) {
-      normSq += vector[i] * vector[i];
-    }
-    return Math.sqrt(normSq);
-  }
-
-  _cosineSimilarity(a, b, normA, normB) {
-    let dot = 0;
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-    }
-    const denom = normA * normB;
-    return denom > 0 ? dot / denom : 0;
-  }
 }
 
 let matcherInstance = null;

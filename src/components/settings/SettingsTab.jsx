@@ -1,7 +1,9 @@
 import React, { useRef } from 'react';
-import { Shield, Sparkles, RotateCcw, Info, ExternalLink, Cpu, Download, Database, Search, RefreshCcw, Camera } from 'lucide-react';
+import { Shield, Sparkles, RotateCcw, Info, ExternalLink, Cpu, Download, Database, Search, RefreshCcw, Camera, Volume2 } from 'lucide-react';
 import { CONDITIONS, LANGUAGES } from '../../data/sampleCards.js';
 import { EXPORT_FORMAT_OPTIONS } from '../../lib/csvExporter.js';
+import { CAMERA_PROFILES } from '../../lib/cameraControls.js';
+import { DEFAULT_SCAN_SOUND, normalizeScanSound } from '../../lib/scanSound.js';
 import { openDesktopUrl } from '../../lib/desktopBridge.js';
 import { FALLBACK_EXCHANGE_RATE_DATE, FALLBACK_ECB_EUR_RATES, PRICE_CURRENCY_OPTIONS, normalizeExchangeRates, normalizePriceCurrency } from '../../lib/priceFormat.js';
 
@@ -12,6 +14,9 @@ export default function SettingsTab({
   onUpdateDefaults,
   minConfidence,
   onUpdateMinConfidence,
+  scanSoundSettings = DEFAULT_SCAN_SOUND,
+  onUpdateScanSound,
+  onTestScanSound,
   modelPreference,
   onUpdateModelPreference,
   detectorMode = 'unknown',
@@ -28,11 +33,17 @@ export default function SettingsTab({
   cardDatabaseSetCoverage = { label: 'No sets loaded', fullLabel: 'No sets loaded', count: 0 },
   priceCacheLabel = 'No cached price data yet',
   priceCacheUpdatedAt = null,
+  priceSourceDate = null,
+  storageInfo = null,
+  onOpenStorageFolder,
   priceCurrency = 'EUR',
   priceExchangeRates = FALLBACK_ECB_EUR_RATES,
   priceExchangeRateDate = FALLBACK_EXCHANGE_RATE_DATE,
   priceExchangeRateFallback = false,
   onUpdatePriceCurrency,
+  cameraProfile = 'auto',
+  onUpdateCameraProfile,
+  cameraSettings,
   cameraDevices = [],
   cameraDeviceId = '',
   onUpdateCameraDeviceId,
@@ -40,6 +51,7 @@ export default function SettingsTab({
   runtimeLabel = 'Browser build',
 }) {
   const scrollRef = useRef(null);
+  const scanSound = normalizeScanSound(scanSoundSettings);
   const normalizedPriceCurrency = normalizePriceCurrency(priceCurrency);
   const normalizedExchangeRates = normalizeExchangeRates(priceExchangeRates);
   const selectedExchangeRate = normalizedExchangeRates[normalizedPriceCurrency] || 1;
@@ -55,7 +67,7 @@ export default function SettingsTab({
   })();
 
   const priceConversionLabel = normalizedPriceCurrency === 'EUR'
-    ? `Base currency: EUR${priceExchangeRateFallback ? ' (fallback FX data)' : ''} from ${priceExchangeRateDate || FALLBACK_EXCHANGE_RATE_DATE}`
+    ? `USD source converted to EUR using ${priceExchangeRateFallback ? 'fallback' : 'ECB'} rates from ${priceExchangeRateDate || FALLBACK_EXCHANGE_RATE_DATE}`
     : `Display converts using ${priceExchangeRateFallback ? 'fallback' : 'ECB'} rates from ${priceExchangeRateDate || FALLBACK_EXCHANGE_RATE_DATE}: 1 EUR = ${selectedExchangeRate} ${normalizedPriceCurrency}`;
 
   const priceCacheUpdatedAtLabel = priceCacheUpdatedAt
@@ -169,6 +181,14 @@ export default function SettingsTab({
                 : 'Connect a webcam and allow camera access to see device names here.'}
             </p>
           </div>
+          <div className="space-y-2">
+            <label className="text-[11px] font-medium text-rift-300 uppercase tracking-wider block">Capture profile</label>
+            <select value={cameraProfile} onChange={(event) => onUpdateCameraProfile?.(event.target.value)} className="select-field rounded-xl" aria-label="Camera capture profile">
+              {CAMERA_PROFILES.map((profile) => <option key={profile.value} value={profile.value}>{profile.label}</option>)}
+            </select>
+            <p className="text-[10px] text-rift-500 leading-relaxed">Saved for this camera. Automatic focus, exposure and white balance are used when supported. Low light allows more exposure time; keep the card still.</p>
+            {cameraSettings?.width && <p className="text-[11px] text-rift-300">Current input: {cameraSettings.width} × {cameraSettings.height}{cameraSettings.frameRate ? ' · ' + Math.round(cameraSettings.frameRate) + ' fps' : ''}</p>}
+          </div>
         </section>
 
         <section className="rounded-2xl bg-rift-800/60 border border-rift-600/20 p-5 space-y-4">
@@ -275,6 +295,39 @@ export default function SettingsTab({
 
         <section className="rounded-2xl bg-rift-800/60 border border-rift-600/20 p-5 space-y-4">
           <h2 className="text-sm font-semibold text-rift-100 flex items-center gap-2">
+            <Volume2 className="w-4 h-4 text-gold-400" />
+            Scan Sound
+          </h2>
+          <p className="text-xs text-rift-400">A short chime confirms that a camera scan was added to the pending list.</p>
+          <button
+            type="button"
+            role="switch"
+            aria-label="Scan success sound"
+            aria-checked={scanSound.enabled}
+            onClick={() => onUpdateScanSound?.({ enabled: !scanSound.enabled })}
+            className={`w-full rounded-xl border px-3 py-2.5 text-sm flex items-center justify-between ${scanSound.enabled
+              ? 'border-gold-400/40 bg-gold-400/10 text-gold-300'
+              : 'border-rift-600/40 bg-rift-700/40 text-rift-300'}`}
+          >
+            <span>Scan success sound</span><span>{scanSound.enabled ? 'ON' : 'OFF'}</span>
+          </button>
+          <div>
+            <label htmlFor="scan-sound-volume" className="flex justify-between text-xs text-rift-300 mb-2">
+              <span>Volume</span><span>{Math.round(scanSound.volume * 100)}%</span>
+            </label>
+            <input id="scan-sound-volume" aria-label="Scan sound volume" type="range" min="0" max="100" step="5"
+              value={Math.round(scanSound.volume * 100)}
+              onChange={(event) => onUpdateScanSound?.({ volume: Number(event.target.value) / 100 })}
+              className="range-slider" />
+          </div>
+          <button type="button" onClick={onTestScanSound} disabled={!onTestScanSound || scanSound.volume <= 0}
+            className="btn-ghost w-full rounded-xl text-sm py-2.5">
+            <Volume2 className="w-4 h-4" />Play test sound
+          </button>
+        </section>
+
+        <section className="rounded-2xl bg-rift-800/60 border border-rift-600/20 p-5 space-y-4">
+          <h2 className="text-sm font-semibold text-rift-100 flex items-center gap-2">
             <Download className="w-4 h-4 text-gold-400" />
             Export Format
           </h2>
@@ -317,8 +370,9 @@ export default function SettingsTab({
             Price Cache
           </h2>
           <p className="text-xs text-rift-400 leading-relaxed">
-            Import the latest <span className="text-gold-300">cards.csv</span> snapshot from cristian-bravo/riftbound-prices into the local database. The snapshot values are sourced in USD.
+            TCGPlayer estimates from the community cards.csv snapshot. Market price is preferred; listing price is used when market price is missing. Source values are USD. Currency conversion does not make these Cardmarket prices.
           </p>
+          <p className="text-xs text-rift-400">Prices identify a set and printing. Foil status, language and condition are not priced separately by this source.</p>
 
           <div>
             <label className="text-[11px] font-medium text-rift-300 uppercase tracking-wider mb-1.5 block">
@@ -349,8 +403,9 @@ export default function SettingsTab({
           </div>
 
           <div className="rounded-xl border border-rift-600/20 bg-rift-950/40 px-3 py-2 text-xs text-rift-400">
-            Last price cache update: <span className="text-rift-200">{priceCacheUpdatedAtLabel}</span>
+            Imported to this device: <span className="text-rift-200">{priceCacheUpdatedAtLabel}</span>
           </div>
+          <div className="text-xs text-rift-400">Source snapshot date: <span className="text-rift-200">{priceSourceDate || 'Unknown'}</span></div>
 
           <button
             onClick={onUpdatePriceData}
@@ -422,6 +477,18 @@ export default function SettingsTab({
         </section>
 
         <section className="rounded-2xl bg-rift-800/60 border border-rift-600/20 p-5 space-y-4">
+          <h2 className="text-sm font-semibold text-rift-100">Stored data</h2>
+          <p className="text-xs text-rift-400">Your data stays in your Windows user profile when the app is updated. Export your collection to keep a separate copy.</p>
+          {storageInfo ? <>
+            <p className="text-xs text-rift-300 break-all">Downloaded card images: {storageInfo.cardsDirectory}</p>
+            <button className="btn-ghost px-3 py-2 text-xs" onClick={() => onOpenStorageFolder?.('cards')}>Open card images folder</button>
+            <p className="text-xs text-rift-300 break-all">Collection, pending cards, settings, card database and price cache: {storageInfo.profileDirectory}</p>
+            <button className="btn-ghost px-3 py-2 text-xs" onClick={() => onOpenStorageFolder?.('profile')}>Open app data folder</button>
+            <p className="text-[10px] text-rift-500">The app manages the files in this profile. Use collection export for a readable copy.</p>
+          </> : <p className="text-xs text-rift-400">Browser data is stored in this browser profile. Folder access is available in the Windows desktop build.</p>}
+        </section>
+
+        <section className="rounded-2xl bg-rift-800/60 border border-rift-600/20 p-5 space-y-4">
           <h2 className="text-sm font-semibold text-rift-100 flex items-center gap-2">
             <Cpu className="w-4 h-4 text-gold-400" />
             Card & Detector
@@ -466,7 +533,7 @@ export default function SettingsTab({
                 onClick={onUpdateCardDatabase}
                 className="btn-primary w-full rounded-xl py-3 text-sm flex items-center justify-center gap-2"
                 disabled={maintenanceBusy}
-                title="Scrapes the Riot card gallery, regenerates card-hashes.json, and refreshes the matcher database."
+                title="Checks the Riot card gallery for missing cards, including later additions to existing sets, and retries incomplete downloads."
               >
                 <RefreshCcw className="w-4 h-4" />
                 Update Card Database
@@ -574,16 +641,16 @@ export default function SettingsTab({
 
           <div className="p-3 rounded-xl bg-rift-700/40 border border-rift-600/20">
             <p className="text-[10px] text-rift-500 leading-relaxed">
-              Runs local scanner and collection data on this device. Price refresh and app update checks are the only in-app network update actions.
+              Scanner and collection data run locally. Card data, price refresh and app update checks use the network.
             </p>
           </div>
 
           <a
-            href="https://github.com/Teme1999/riftbound-scanner"
+            href="https://github.com/Teme1999/Riftbound-Card-Scanner"
             rel="noopener noreferrer"
             onClick={(event) => {
               event.preventDefault();
-              openDesktopUrl('https://github.com/Teme1999/riftbound-scanner');
+              openDesktopUrl('https://github.com/Teme1999/Riftbound-Card-Scanner');
             }}
             className="flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-gradient-to-r from-pink-500/10 to-red-500/10 border border-pink-500/30 text-pink-300 hover:border-pink-400/50 hover:from-pink-500/20 hover:to-red-500/20 transition-all text-xs font-medium"
           >
