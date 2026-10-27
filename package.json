@@ -11,12 +11,16 @@
   },
   "type": "module",
   "scripts": {
+    "test": "node --test tests/collection.test.mjs tests/scanner.test.mjs tests/quality.test.mjs tests/database.test.mjs tests/prices.test.mjs tests/updater.test.mjs tests/release.test.mjs tests/sound.test.mjs tests/matching.test.mjs",
+    "test:release": "node --test tests/release.test.mjs",
+    "test:cards": "node --test tests/card-assets.test.mjs",
     "check:assets": "node scripts/check-runtime-assets.mjs",
-    "check": "npm run check:assets && npm run desktop:check",
+    "check": "npm test && npm run test:cards && npm run tauri:build-ui && npm run desktop:check && npm run desktop:test",
     "tauri:dev-server": "vite",
     "tauri:build-ui": "npm run check:assets && vite build",
     "desktop:dev": "tauri dev",
     "desktop:check": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "desktop:test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "desktop:build": "npm run check:assets && tauri build"
   },
   "dependencies": {

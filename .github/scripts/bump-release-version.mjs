@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const ROOT = process.cwd();
 const PACKAGE_PATH = path.join(ROOT, 'package.json');
@@ -80,11 +81,17 @@ function nextReleaseIndex(currentReleaseVersion, dateParts, requestedIndex) {
   return 1;
 }
 
-function buildVersions(dateParts, index) {
+export function buildVersions(dateParts, index) {
+  const date = new Date(Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day));
+  if (dateParts.year < 2000 || dateParts.year > 2099 || date.getUTCFullYear() !== dateParts.year ||
+    date.getUTCMonth() + 1 !== dateParts.month || date.getUTCDate() !== dateParts.day ||
+    !Number.isInteger(index) || index < 1 || index > 99) throw new Error('Expected a valid date and release index 1-99.');
   const releaseVersion = `${dateParts.year}.${pad2(dateParts.month)}.${pad2(dateParts.day)}.${index}`;
   const shortYear = String(dateParts.year).slice(-2);
-  const semver = `${Number(shortYear)}.${dateParts.month}.${dateParts.day}-${index}`;
-  const wixVersion = `${Number(shortYear)}.${dateParts.month}.${dateParts.day}.${index}`;
+  // MSI ignores a fourth component. Pack day/index into the third component so
+  // both MSI and semantic version comparisons increase on same-day releases.
+  const semver = `${Number(shortYear)}.${dateParts.month}.${dateParts.day * 100 + index}`;
+  const wixVersion = semver;
 
   return { releaseVersion, semver, wixVersion };
 }
@@ -159,4 +166,4 @@ function main() {
   fs.writeFileSync(CARGO_TOML_PATH, nextCargoToml);
 }
 
-main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

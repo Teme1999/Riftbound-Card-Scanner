@@ -1,307 +1,109 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { isReliableScanResult } from '../lib/scanQuality.js';
 
-const AUTO_SCAN_INTERVAL = 250;
-const AUTO_SCAN_DISAPPEAR_COUNT = 4;
-const AUTO_SCAN_MIN_HITS = 3;
-const AUTO_SCAN_MIN_STABLE_MS = 500;
-const AUTO_SCAN_HIGH_CONFIDENCE_SCORE = 0.93;
-const AUTO_SCAN_HIGH_CONFIDENCE_MIN_HITS = 2;
-const AUTO_SCAN_REPEAT_MIN_SIMILARITY = 0.68;
-const AUTO_SCAN_CONSENSUS_MIN_SIMILARITY = 0.62;
-const AUTO_SCAN_CONSENSUS_MIN_SCORE = 0.88;
-const AUTO_SCAN_POST_COMMIT_COOLDOWN_MS = 1000;
+const SCAN_INTERVAL_MS = 250;
+const POST_COMMIT_COOLDOWN_MS = 1000;
 
-/**
- * Hook for continuous auto-scan mode.
- *
- * Runs detectSingleFrame on an interval, skipping back-to-back duplicates.
- * The last accepted card stays locked until a different card is accepted.
- */
-export function useAutoScan({
-  cameraIsActive,
-  isProcessing,
-  detectSingleFrame,
-  captureFrame,
-  onCardDetected,
-}) {
+export function useAutoScan({ cameraIsActive, isProcessing, detectSingleFrame, captureFrame, onCardDetected }) {
   const [enabled, setEnabled] = useState(false);
   const [debugPreview, setDebugPreview] = useState(null);
-
-  // Session state keeps one visible card from being committed repeatedly.
-  // lockedCardIdRef also prevents same-card reappears from becoming duplicates.
   const sessionRef = useRef(null);
   const lockedCardIdRef = useRef(null);
   const cooldownUntilRef = useRef(0);
-  const intervalRef = useRef(null);
-
-  const isProcessingRef = useRef(isProcessing);
-  const detectRef = useRef(detectSingleFrame);
-  const captureRef = useRef(captureFrame);
-  const onCardDetectedRef = useRef(onCardDetected);
-
-  useEffect(() => { isProcessingRef.current = isProcessing; }, [isProcessing]);
-  useEffect(() => { detectRef.current = detectSingleFrame; }, [detectSingleFrame]);
-  useEffect(() => { captureRef.current = captureFrame; }, [captureFrame]);
-  useEffect(() => { onCardDetectedRef.current = onCardDetected; }, [onCardDetected]);
-
-  const scoreResult = useCallback((result) => {
-    const similarity = typeof result?.similarity === 'number' ? result.similarity : 0;
-    const confidence = typeof result?.confidence === 'number' ? result.confidence : 0;
-    const matchedBonus = result?.matched ? 0.03 : 0;
-    return Math.min(1, similarity * 0.82 + confidence * 0.18 + matchedBonus);
-  }, []);
-
-  const recordCandidate = useCallback((session, result, now) => {
-    const cardId = result?.cardData?.id;
-    if (!session || !cardId) return null;
-
-    const resultScore = scoreResult(result);
-    const existing = session.candidates.get(cardId);
-    const candidate = existing || {
-      cardId,
-      cardData: result.cardData,
-      bestResult: result,
-      bestScore: resultScore,
-      totalScore: 0,
-      hits: 0,
-      matchedHits: 0,
-      firstSeenAt: now,
-      lastSeenAt: now,
-    };
-
-    candidate.hits += 1;
-    candidate.totalScore += resultScore;
-    candidate.lastSeenAt = now;
-    if (result.matched) candidate.matchedHits += 1;
-
-    if (resultScore >= candidate.bestScore) {
-      candidate.bestResult = result;
-      candidate.bestScore = resultScore;
-      candidate.cardData = result.cardData;
-    }
-
-    session.candidates.set(cardId, candidate);
-    session.lastSeenAt = now;
-    session.noMatchStreak = 0;
-    setDebugPreview(candidate.bestResult);
-    return candidate;
-  }, [scoreResult]);
-
-  const startSession = useCallback((result, now) => {
-    const session = {
-      candidates: new Map(),
-      committed: false,
-      noMatchStreak: 0,
-      lastSeenAt: now,
-      firstSeenAt: now,
-    };
-    sessionRef.current = session;
-    recordCandidate(session, result, now);
-  }, [recordCandidate]);
+  const lastFrameIdRef = useRef(null);
+  const latestRef = useRef({ isProcessing, detectSingleFrame, captureFrame, onCardDetected });
+  useEffect(() => {
+    latestRef.current = { isProcessing, detectSingleFrame, captureFrame, onCardDetected };
+  }, [isProcessing, detectSingleFrame, captureFrame, onCardDetected]);
 
   const clearSession = useCallback(() => {
     sessionRef.current = null;
     setDebugPreview(null);
   }, []);
 
-  const getCandidateScore = useCallback((candidate) => {
-    const averageScore = candidate.totalScore / Math.max(1, candidate.hits);
-    const hitBonus = Math.min(candidate.hits, 5) * 0.035;
-    const matchedBonus = Math.min(candidate.matchedHits, 3) * 0.02;
-    return candidate.bestScore * 0.72 + averageScore * 0.18 + hitBonus + matchedBonus;
-  }, []);
-
-  const getSessionWinner = useCallback((session) => {
-    if (!session || session.candidates.size === 0) return null;
-
-    let winner = null;
-    for (const candidate of session.candidates.values()) {
-      const aggregateScore = getCandidateScore(candidate);
-      if (!winner || aggregateScore > winner.aggregateScore) {
-        winner = { ...candidate, aggregateScore };
-      }
-    }
-
-    return winner;
-  }, [getCandidateScore]);
-
-  const isWinnerReady = useCallback((session, winner, now = Date.now(), allowOnDisappear = false) => {
-    if (!session || !winner) return false;
-
-    const stableDuration = now - session.firstSeenAt;
-    const bestSimilarity = winner.bestResult?.similarity || 0;
-
-    if (winner.hits >= AUTO_SCAN_HIGH_CONFIDENCE_MIN_HITS && winner.bestScore >= AUTO_SCAN_HIGH_CONFIDENCE_SCORE) {
-      return true;
-    }
-
-    if (
-      winner.hits >= AUTO_SCAN_MIN_HITS &&
-      winner.aggregateScore >= AUTO_SCAN_CONSENSUS_MIN_SCORE &&
-      bestSimilarity >= AUTO_SCAN_REPEAT_MIN_SIMILARITY &&
-      stableDuration >= AUTO_SCAN_MIN_STABLE_MS
-    ) {
-      return true;
-    }
-
-    if (!allowOnDisappear) {
-      return false;
-    }
-
-    return (
-      bestSimilarity >= 0.88 ||
-      (winner.hits >= 2 && bestSimilarity >= AUTO_SCAN_REPEAT_MIN_SIMILARITY) ||
-      (winner.hits >= AUTO_SCAN_MIN_HITS && bestSimilarity >= AUTO_SCAN_CONSENSUS_MIN_SIMILARITY)
-    );
-  }, []);
-
-  const commitSession = useCallback((now, { allowOnDisappear = false } = {}) => {
-    const session = sessionRef.current;
-    const winner = getSessionWinner(session);
-    if (!session || session.committed || !isWinnerReady(session, winner, now, allowOnDisappear)) {
-      return false;
-    }
-
-    const result = {
-      ...winner.bestResult,
-      timestamp: now,
-      matched: true,
-      acceptedByAutoScan: true,
-      autoScanConsensus: {
-        hits: winner.hits,
-        matchedHits: winner.matchedHits,
-        aggregateScore: winner.aggregateScore,
-      },
-    };
-
-    cooldownUntilRef.current = now + AUTO_SCAN_POST_COMMIT_COOLDOWN_MS;
-    session.committed = true;
-    session.cardId = winner.cardId;
-    session.result = result;
-    lockedCardIdRef.current = winner.cardId;
-    onCardDetectedRef.current(result);
-    setDebugPreview(result);
-
-    session.noMatchStreak = 0;
-    return true;
-  }, [getSessionWinner, isWinnerReady]);
-
-  // Start/stop interval - only depends on enabled + cameraIsActive
   useEffect(() => {
-    if (!enabled || !cameraIsActive) {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      return;
-    }
-
-    intervalRef.current = setInterval(async () => {
-      if (isProcessingRef.current) return;
-
-      const now = Date.now();
-      const session = sessionRef.current;
-
-      const result = await detectRef.current(captureRef.current, { includeCandidate: true });
-
-      if (!result?.cardData) {
-        if (!session) return;
-
-        session.noMatchStreak += 1;
-
-        if (!session.committed && session.noMatchStreak >= AUTO_SCAN_DISAPPEAR_COUNT) {
-          if (!commitSession(now, { allowOnDisappear: true })) {
-            clearSession();
+    if (!enabled || !cameraIsActive) return undefined;
+    let cancelled = false, processing = false;
+    const timer = setInterval(async () => {
+      if (processing || latestRef.current.isProcessing) return;
+      processing = true;
+      try {
+        const result = await latestRef.current.detectSingleFrame(latestRef.current.captureFrame, { includeCandidate: true });
+        if (cancelled) return;
+        if (result?.skipped) {
+          const session = sessionRef.current;
+          if (session && !session.committed && Date.now() - session.lastSeenAt > 1500) clearSession();
+          return;
+        }
+        // A buffered image is one observation, even if it is selected twice.
+        if (result?.frameId != null) {
+          if (lastFrameIdRef.current != null && result.frameId <= lastFrameIdRef.current) return;
+          lastFrameIdRef.current = result.frameId;
+        }
+        let session = sessionRef.current;
+        if (!isReliableScanResult(result)) {
+          if (session) {
+            session.misses++;
+            session.consecutive = 0;
+            if (session.misses >= 4) clearSession();
           }
           return;
         }
-
-        if (session.committed && session.noMatchStreak >= AUTO_SCAN_DISAPPEAR_COUNT) {
-          clearSession();
+        const now = Date.now(), cardId = result.cardData.id;
+        if (lockedCardIdRef.current === cardId) {
+          if (session?.committed) session.misses = 0;
+          return;
         }
-        return;
-      }
-
-      if (lockedCardIdRef.current === result.cardData.id) {
-        if (session && session.committed && session.cardId === result.cardData.id) {
-          session.lastSeenAt = now;
-          session.noMatchStreak = 0;
+        if (session?.committed) { clearSession(); session = null; }
+        if (!session && now < cooldownUntilRef.current) return;
+        const qualityScore = Number.isFinite(result.quality.score) ? result.quality.score : 0.5;
+        const score = result.similarity * 0.65 + qualityScore * 0.25 + result.confidence * 0.1;
+        if (!session || session.cardId !== cardId) {
+          session = { cardId, firstSeenAt: now, lastSeenAt: now, hits: 0, consecutive: 0, misses: 0, committed: false, bestScore: -1 };
+          sessionRef.current = session;
         }
-        return;
+        session.hits++;
+        session.consecutive++;
+        session.misses = 0;
+        session.lastSeenAt = now;
+        if (score >= session.bestScore) { session.bestResult = result; session.bestScore = score; }
+        setDebugPreview(session.bestResult);
+        const fastReady = session.consecutive >= 2 && session.bestResult.similarity >= 0.96 && session.bestResult.similarityGap >= 0.07;
+        const stableReady = session.consecutive >= 3 && now - session.firstSeenAt >= 500;
+        if (!fastReady && !stableReady) return;
+        const accepted = { ...session.bestResult, timestamp: now, acceptedByAutoScan: true,
+          autoScanConsensus: { hits: session.hits, matchedHits: session.hits, aggregateScore: session.bestScore } };
+        // Repetition can strengthen an unambiguous match, never promote an
+        // ambiguous/poor-quality candidate into a valid match.
+        if (latestRef.current.onCardDetected(accepted) !== true) return;
+        session.committed = true;
+        lockedCardIdRef.current = cardId;
+        cooldownUntilRef.current = now + POST_COMMIT_COOLDOWN_MS;
+        setDebugPreview(accepted);
+      } finally {
+        processing = false;
       }
+    }, SCAN_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [enabled, cameraIsActive, clearSession]);
 
-      if (session && session.committed && session.cardId !== result.cardData.id) {
-        clearSession();
-      }
-
-      if (cooldownUntilRef.current > now && !session) {
-        return;
-      }
-
-      if (!session) {
-        startSession(result, now);
-        commitSession(now);
-        return;
-      }
-
-      if (session.committed) {
-        if (session.cardId === result.cardData.id) {
-          session.lastSeenAt = now;
-          session.noMatchStreak = 0;
-        }
-        return;
-      }
-
-      recordCandidate(session, result, now);
-
-      commitSession(now);
-    }, AUTO_SCAN_INTERVAL);
-
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    };
-  }, [enabled, cameraIsActive]);
-
-  // Auto-disable when camera stops
   useEffect(() => {
-    if (!cameraIsActive && enabled) {
-      setEnabled(false);
-    }
-  }, [cameraIsActive, enabled]);
+    if (!cameraIsActive) { setEnabled(false); clearSession(); }
+  }, [cameraIsActive, clearSession]);
 
   const toggleAutoScan = useCallback(() => {
-    setEnabled(prev => {
-      if (!prev) {
-        cooldownUntilRef.current = 0;
-        lockedCardIdRef.current = null;
-        clearSession();
-      } else {
-        clearSession();
-      }
-      return !prev;
-    });
+    setEnabled((previous) => !previous);
+    cooldownUntilRef.current = 0;
+    lockedCardIdRef.current = null;
+    lastFrameIdRef.current = null;
+    clearSession();
   }, [clearSession]);
 
   const setLastCardId = useCallback((cardId) => {
-    cooldownUntilRef.current = Date.now() + AUTO_SCAN_POST_COMMIT_COOLDOWN_MS;
+    cooldownUntilRef.current = Date.now() + POST_COMMIT_COOLDOWN_MS;
     lockedCardIdRef.current = cardId;
-    sessionRef.current = {
-      cardId,
-      result: null,
-      candidates: new Map(),
-      committed: true,
-      noMatchStreak: 0,
-      lastSeenAt: Date.now(),
-    };
+    sessionRef.current = { cardId, committed: true, misses: 0, consecutive: 0 };
   }, []);
 
-  return {
-    autoScanEnabled: enabled,
-    toggleAutoScan,
-    setLastCardId,
-    debugPreview,
-  };
+  return { autoScanEnabled: enabled, toggleAutoScan, setLastCardId, debugPreview };
 }

@@ -1,5 +1,6 @@
 import * as ort from 'onnxruntime-web/wasm';
 import { resolveAppUrl } from './runtime.js';
+import { getDetectorLetterbox, selectGuideDetection } from './scanGeometry.js';
 
 const MODEL_URLS = {
   normal: resolveAppUrl('/models/yolo11n-obb-riftbound.onnx'),
@@ -89,15 +90,17 @@ class YOLODetector {
       return [];
     }
 
-    return this._onnxDetect(source, width, height);
+    if (!source.scanRegion) return this._onnxDetect(source, width, height);
+    // A tight camera ROI can make a close card larger than the detector's
+    // training distribution. Leave context, then retry at the original scale
+    // only when the guide contains no detection. Matching still crops natively.
+    const detections = await this._onnxDetect(source, width, height, 0.85);
+    return selectGuideDetection(detections, source.scanRegion.guide)
+      ? detections : this._onnxDetect(source, width, height);
   }
 
-  async _onnxDetect(source, srcW, srcH) {
-    const scale = Math.min(this.inputSize / srcW, this.inputSize / srcH);
-    const newW = Math.round(srcW * scale);
-    const newH = Math.round(srcH * scale);
-    const padX = (this.inputSize - newW) / 2;
-    const padY = (this.inputSize - newH) / 2;
+  async _onnxDetect(source, srcW, srcH, contextScale = 1) {
+    const { scale, newW, newH, padX, padY } = getDetectorLetterbox(srcW, srcH, this.inputSize, contextScale);
 
     const canvas = document.createElement('canvas');
     canvas.width = this.inputSize;
@@ -167,7 +170,18 @@ class YOLODetector {
     canvas.width = Math.max(1, Math.round(w));
     canvas.height = Math.max(1, Math.round(h));
     canvas.getContext('2d').drawImage(big, bcx - w / 2, bcy - h / 2, w, h, 0, 0, w, h);
-    return canvas;
+    if (canvas.width <= canvas.height) return canvas;
+    // OBB axes are interchangeable: an upright card may be returned with its
+    // long edge as width and an angle near 90 degrees. Reference artwork is
+    // portrait, so undo that extra quarter-turn before quality/matching.
+    const portrait = document.createElement('canvas');
+    portrait.width = canvas.height;
+    portrait.height = canvas.width;
+    const ctx = portrait.getContext('2d');
+    ctx.translate(portrait.width / 2, portrait.height / 2);
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
+    return portrait;
   }
 
   _nmsOBB(detections) {

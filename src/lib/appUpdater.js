@@ -10,7 +10,7 @@ export async function checkForAppUpdate() {
   return check();
 }
 
-export async function downloadAndInstallAppUpdate(update, onProgress) {
+export async function downloadAndInstallAppUpdate(update, onProgress, { beforeInstall } = {}) {
   if (!update) {
     throw new Error('No app update is available to install.');
   }
@@ -18,7 +18,7 @@ export async function downloadAndInstallAppUpdate(update, onProgress) {
   let downloadedBytes = 0;
   let totalBytes = null;
 
-  await update.downloadAndInstall((event) => {
+  await update.download((event) => {
     if (event.event === 'Started') {
       downloadedBytes = 0;
       totalBytes = event.data.contentLength ?? null;
@@ -45,13 +45,18 @@ export async function downloadAndInstallAppUpdate(update, onProgress) {
 
     if (event.event === 'Finished') {
       onProgress?.({
-        status: 'finished',
+        status: 'downloaded',
         downloadedBytes,
         totalBytes,
         percent: 100,
       });
     }
   });
+  // On Windows install() exits the process. Flush current user data before
+  // calling it; code after install() is not a reliable persistence hook.
+  await beforeInstall?.();
+  onProgress?.({ status: 'installing', downloadedBytes, totalBytes, percent: 100 });
+  await update.install();
 }
 
 export async function relaunchApp() {

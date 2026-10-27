@@ -96,9 +96,10 @@ export function getPriceValue(priceRecord) {
 }
 
 export function convertUsdPrice(value, currency = 'EUR', exchangeRates = FALLBACK_ECB_EUR_RATES) {
+  if (value == null || value === '') return null;
   const parsed = Number(value);
 
-  if (!Number.isFinite(parsed)) {
+  if (!Number.isFinite(parsed) || parsed < 0) {
     return null;
   }
 
@@ -120,7 +121,7 @@ export function formatPrice(value, currency = 'EUR', exchangeRates = FALLBACK_EC
 
   const fractionDigits = ZERO_DECIMAL_CURRENCIES.has(normalizedCurrency)
     ? 0
-    : converted >= 10 ? 0 : 2;
+    : 2;
 
   return new Intl.NumberFormat('en-US', {
     style: 'currency',

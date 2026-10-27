@@ -2,7 +2,7 @@ import os
 import re
 import sys
 import json
-import shutil
+import time
 import sqlite3
 from io import BytesIO
 
@@ -20,7 +20,7 @@ DB_PATH = os.path.join(BASE_DIR, "riftbound.db")
 PUBLIC_DIR = os.path.join(BASE_DIR, "..", "public")
 CARDS_DIR = os.path.join(PUBLIC_DIR, "cards")
 HASHES_PATH = os.path.join(PUBLIC_DIR, "card-hashes.json")
-GALLERY_URL = "https://riftbound.leagueoflegends.com/en-us/card-gallery/"
+GALLERY_URL = "https://playriftbound.com/en-us/card-gallery/"
 
 GRID_SIZE = 16 # 16x16 grid = 768 features (256 cells * 3 RGB channels)
 
@@ -363,39 +363,45 @@ def _download_single_image(card: dict) -> tuple[str, bool]:
         return (card_id, False)
 
     filepath = os.path.join(CARDS_DIR, f"{card_id}.webp")
-    try:
-        resp = SESSION.get(url, timeout=20)
-        resp.raise_for_status()
+    temporary = filepath + ".tmp"
+    for attempt in range(3):
+        try:
+            resp = SESSION.get(url, timeout=20)
+            resp.raise_for_status()
+            with Image.open(BytesIO(resp.content)) as img:
+                if img.width > img.height:
+                    img = img.rotate(90, expand=True)
+                img.save(temporary, format="WEBP", quality=80)
+            os.replace(temporary, filepath)
+            return (card_id, True)
+        except Exception:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+            if attempt < 2:
+                time.sleep(attempt + 1)
+    return (card_id, False)
 
-        # Load image and optimize to WebP
-        with Image.open(BytesIO(resp.content)) as img:
-            # Rotate landscape images to portrait
-            if img.width > img.height:
-                img = img.rotate(90, expand=True)
-            img.save(filepath, format="WEBP", quality=80)
-        return (card_id, True)
-    except Exception:
-        return (card_id, False)
 
-
-def download_images(cards: list[dict]) -> None:
+def download_images(cards: list[dict], refresh_ids=()) -> list[str]:
     """
     Downloads card images, optimizes them to WebP, and saves to public/cards.
 
     Arguments:
         cards: A list of card dictionaries containing image URLs.
     """
-    # Clear and recreate the cards directory
-    if os.path.exists(CARDS_DIR):
-        shutil.rmtree(CARDS_DIR)
-    os.makedirs(CARDS_DIR)
-
-    cards_to_download = [c for c in cards if c["image_url"]]
-    failed = 0
+    # Keep existing assets usable during partial/failed updates.
+    os.makedirs(CARDS_DIR, exist_ok=True)
+    refresh_ids = set(refresh_ids)
+    cards_to_download = []
+    for card in {c["id"]: c for c in cards}.values():
+        path = os.path.join(CARDS_DIR, f'{card["id"]}.webp')
+        if card["id"] in refresh_ids or not os.path.isfile(path) or cv2.imread(path) is None:
+            cards_to_download.append(card)
+    failed = []
 
     if not cards_to_download:
         print("No cards to download.")
-        return
+        return failed
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(_download_single_image, card): card for card in cards_to_download}
@@ -403,7 +409,7 @@ def download_images(cards: list[dict]) -> None:
             for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading and optimizing"):
                 card_id, success = future.result()
                 if not success:
-                    failed += 1
+                    failed.append(card_id)
                     tqdm.write(f"  Error downloading {card_id}")
         except KeyboardInterrupt:
             for f in futures:
@@ -411,7 +417,8 @@ def download_images(cards: list[dict]) -> None:
             executor.shutdown(wait=False, cancel_futures=True)
             raise
 
-    print(f"Download complete. Total: {len(cards_to_download)}, Failed: {failed}")
+    print(f"Download complete. Total: {len(cards_to_download)}, Failed: {len(failed)}")
+    return failed
 
 
 def _crop_artwork(image: np.ndarray) -> np.ndarray:
@@ -540,11 +547,13 @@ def generate_card_hashes() -> None:
             "f": features,
         })
 
-    cards.sort(key=lambda c: (c["set"], c["number"]))
+    cards.sort(key=lambda c: (c["set"], str(c["number"]).zfill(8), c["id"]))
 
     os.makedirs(os.path.dirname(HASHES_PATH), exist_ok=True)
-    with open(HASHES_PATH, "w", encoding="utf-8") as f:
+    temporary = HASHES_PATH + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as f:
         json.dump({"gridSize": GRID_SIZE, "cards": cards}, f, ensure_ascii=False)
+    os.replace(temporary, HASHES_PATH)
 
     print(f"Hashes generated: {len(cards)} cards ({skipped} skipped)")
 
@@ -572,18 +581,30 @@ def main():
 
     # Save to SQLite
     conn = init_db(DB_PATH)
-    insert_cards(conn, cards)
+    previous_urls = dict(conn.execute("SELECT id, image_url FROM cards"))
+    # Release builders restore the bundled images/hash file without SQLite.
+    # Use that metadata too, so changed images are refreshed on a clean runner.
+    if os.path.isfile(HASHES_PATH):
+        with open(HASHES_PATH, encoding="utf-8") as existing:
+            for card in json.load(existing).get("cards", []):
+                previous_urls.setdefault(card["id"], card.get("imageUrl", ""))
+    refresh_ids = {c["id"] for c in cards
+                   if c["id"] in previous_urls and c["image_url"] != previous_urls[c["id"]]}
+    failed = download_images(cards, refresh_ids)
+    # Do not mark a changed image as current when its replacement failed.
+    failed_refresh = set(failed) & refresh_ids
+    insert_cards(conn, [c for c in cards if c["id"] not in failed_refresh])
     total = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
     print(f"Cards in database: {total}")
     conn.close()
-
-    # Download, optimize, and rotate images
-    download_images(cards)
 
     # Generate hashes for card matching
     generate_card_hashes()
 
     print("Scraping complete!")
+    if failed:
+        print(f"{len(failed)} images missing or outdated; run again to retry.", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

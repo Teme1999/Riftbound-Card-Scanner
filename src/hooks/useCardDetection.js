@@ -1,6 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { getDetector, DetectorState } from '../lib/yoloDetector.js';
 import { getMatcher } from '../lib/cardMatcher.js';
+import { resolveCardData } from '../lib/cardData.js';
+import { selectGuideDetection, mapDetectionBox } from '../lib/scanGeometry.js';
+import { readCanvasQuality, MIN_SIMILARITY_GAP } from '../lib/scanQuality.js';
 
 /**
  * Hook for single-frame card detection (tap to scan).
@@ -9,27 +12,30 @@ import { getMatcher } from '../lib/cardMatcher.js';
  *   1. YOLO detection on a captured frame
  *   2. Card matching on detected crops (via CardMatcher)
  */
-export function useCardDetection({ scanSetFilter = 'all' } = {}) {
+export function useCardDetection({ scanSetFilter = 'all', minSimilarity = 0.90 } = {}) {
   const [detectorState, setDetectorState] = useState(DetectorState.UNLOADED);
   const [detectorMode, setDetectorMode] = useState('unloaded');
   const [isProcessing, setIsProcessing] = useState(false);
   const [lastDetection, setLastDetection] = useState(null);
 
   const detectorRef = useRef(null);
+  const busyRef = useRef(false);
+  const minSimilarityRef = useRef(minSimilarity);
   const scanSetFilterRef = useRef(scanSetFilter);
 
-  // Min cosine similarity for a valid strict match
+  // Min combined artwork similarity for a valid strict match
   const SIMILARITY_THRESHOLD = 0.68;
   // Lower floor used only by auto-scan temporal voting.
   const CANDIDATE_SIMILARITY_FLOOR = 0.62;
   // Min gap between top-1 and top-2 similarity scores; rejects partial/ambiguous views
-  const SIMILARITY_GAP_THRESHOLD = 0.05;
+  const SIMILARITY_GAP_THRESHOLD = MIN_SIMILARITY_GAP;
   const TARGET_ASPECT_RATIO = 63 / 88;
   const MAX_ASPECT_DEVIATION = 0.22;
 
   useEffect(() => {
     scanSetFilterRef.current = scanSetFilter;
-  }, [scanSetFilter]);
+    minSimilarityRef.current = minSimilarity;
+  }, [scanSetFilter, minSimilarity]);
 
   /**
    * Initialize the YOLO detector
@@ -68,137 +74,80 @@ export function useCardDetection({ scanSetFilter = 'all' } = {}) {
   }
 
   /**
-   * Resolve card data from a matcher card to full card format.
-   */
-  function resolveCardData(matcherCard) {
-    if (!matcherCard) return null;
-
-    // Extract collector number from code (e.g. "OGN-089a/298" → "089a", "OGN-309*/298" → "309*")
-    const codePart = (matcherCard.code || '').split('/')[0]; // "OGN-089a"
-    const collectorNumber = codePart.includes('-')
-      ? codePart.split('-').slice(1).join('-')              // "089a"
-      : String(matcherCard.number).padStart(3, '0');        // fallback: "089"
-    return {
-      id: matcherCard.id,
-      name: matcherCard.name,
-      collectorNumber,
-      code: matcherCard.code,
-      set: matcherCard.set,
-      setName: matcherCard.setName,
-      domain: matcherCard.domain,
-      domains: matcherCard.domains,
-      rarity: matcherCard.rarity,
-      type: matcherCard.type,
-      energy: matcherCard.energy,
-      might: matcherCard.might,
-      tags: matcherCard.tags,
-      illustrator: matcherCard.illustrator,
-      text: matcherCard.text,
-      imageUrl: matcherCard.imageUrl,
-    };
-  }
-
-  /**
    * Detect cards in a single frame (tap to scan).
    * Captures one frame, runs YOLO + matching, returns result.
    */
   const detectSingleFrame = useCallback(async (captureFrame, options = {}) => {
-    if (isProcessing) return null;
-    if (!detectorRef.current || detectorRef.current.state !== DetectorState.READY) return null;
-
-    const includeCandidate = Boolean(options.includeCandidate);
+    if (busyRef.current || !detectorRef.current || detectorRef.current.state !== DetectorState.READY) return null;
     const matcher = getMatcher();
     if (!matcher.ready) return null;
-
     const frame = captureFrame?.();
-    if (!frame) return null;
-
+    if (!frame) return { skipped: true };
+    busyRef.current = true;
     setIsProcessing(true);
-
+    const observedAt = Date.now();
+    const observation = { observedAt, frameId: frame.frameId, capturedAt: frame.capturedAt ?? observedAt };
     try {
-      // Step 1: YOLO detection
-      const detections = await detectorRef.current.detect(frame);
-
-      if (detections.length === 0) {
-        setLastDetection(null);
+      if (frame.scanMoving || ['too-dark', 'too-bright'].includes(frame.scanQuality?.issue)) {
+        setLastDetection({ ...observation, matched: false, reason: frame.scanMoving ? 'moving' : frame.scanQuality.issue });
         return null;
       }
-
-      const bestDetection = detections[0];
-
-      // Step 2: Ensure portrait orientation
-      let crop = bestDetection.cropCanvas;
-      crop = ensurePortrait(crop);
-
+      const detections = await detectorRef.current.detect(frame);
+      if (frame.scanCancelled) return null;
+      const bestDetection = selectGuideDetection(detections, frame.scanRegion?.guide);
+      if (!bestDetection) {
+        setLastDetection({ ...observation, matched: false, reason: 'outside-guide' });
+        return null;
+      }
+      const box = mapDetectionBox(bestDetection.box, frame.scanRegion);
+      const base = { ...observation, box, confidence: bestDetection.confidence, matched: false };
       const boxRatio = bestDetection.box.w / Math.max(1, bestDetection.box.h);
       const normalizedRatio = Math.min(boxRatio, 1 / boxRatio);
-      const aspectDeviation = Math.abs(normalizedRatio - TARGET_ASPECT_RATIO);
-
-      if (aspectDeviation > MAX_ASPECT_DEVIATION) {
-        setLastDetection({
-          box: bestDetection.box,
-          confidence: bestDetection.confidence,
-          matched: false,
-          reason: 'aspect-mismatch',
-        });
+      if (Math.abs(normalizedRatio - TARGET_ASPECT_RATIO) > MAX_ASPECT_DEVIATION) {
+        setLastDetection({ ...base, reason: 'outside-guide' });
         return null;
       }
-
-      // Step 3: Match using card matcher
+      const crop = ensurePortrait(bestDetection.cropCanvas);
+      const quality = readCanvasQuality(crop);
+      if (frame.scanMoving) { quality.acceptable = false; quality.issue = 'moving'; }
+      if (!quality.acceptable) {
+        setLastDetection({ ...base, quality, reason: quality.issue });
+        return null;
+      }
       const matchResult = matcher.identify(crop, { setFilter: scanSetFilterRef.current });
-
-      if (!matchResult) {
-        setLastDetection({
-          box: bestDetection.box,
-          confidence: bestDetection.confidence,
-          matched: false,
-        });
+      if (!matchResult?.card) {
+        setLastDetection({ ...base, quality, reason: 'low-similarity' });
         return null;
       }
-
-      // Step 4: Resolve full card data
-      const cardData = resolveCardData(matchResult.card);
-      if (!cardData) return null;
-
       const similarityGap = matchResult.similarity - (matchResult.secondBestSim ?? 0);
-      const isStrongEnough = matchResult.similarity >= SIMILARITY_THRESHOLD;
-      const isUnambiguous = similarityGap >= SIMILARITY_GAP_THRESHOLD;
-      const isMatched = isStrongEnough && isUnambiguous;
-
+      const isStrongEnough = matchResult.similarity >= Math.max(SIMILARITY_THRESHOLD, minSimilarityRef.current);
+      const matched = isStrongEnough && similarityGap >= SIMILARITY_GAP_THRESHOLD;
       const result = {
-        cardData,
+        ...base,
+        cardData: resolveCardData(matchResult.card),
         similarity: matchResult.similarity,
-        confidence: bestDetection.confidence,
-        box: bestDetection.box,
-        matched: isMatched,
+        colorSimilarity: matchResult.colorSimilarity,
+        structureSimilarity: matchResult.structureSimilarity,
         similarityGap,
+        minSimilarity: Math.max(SIMILARITY_THRESHOLD, minSimilarityRef.current),
+        minSimilarityGap: SIMILARITY_GAP_THRESHOLD,
+        quality,
+        matched,
         timestamp: Date.now(),
+        reason: matched ? null : quality.issue || (isStrongEnough ? 'ambiguous' : 'low-similarity'),
       };
-
-      if (!isMatched) {
-        setLastDetection({
-          box: bestDetection.box,
-          confidence: bestDetection.confidence,
-          matched: false,
-          reason: isStrongEnough ? 'ambiguous' : 'low-similarity',
-        });
-
-        if (includeCandidate && matchResult.similarity >= CANDIDATE_SIMILARITY_FLOOR) {
-          return result;
-        }
-
-        return null;
-      }
-
       setLastDetection(result);
-      return result;
+      if (matched || (options.includeCandidate && matchResult.similarity >= CANDIDATE_SIMILARITY_FLOOR)) return result;
+      return null;
     } catch (error) {
       console.error('[Detection] Frame processing error:', error);
+      setLastDetection({ ...observation, matched: false, reason: 'low-similarity' });
       return null;
     } finally {
+      busyRef.current = false;
       setIsProcessing(false);
     }
-  }, [isProcessing]);
+  }, []);
 
   return {
     detectorState,

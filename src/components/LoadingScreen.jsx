@@ -1,7 +1,8 @@
 import React from 'react';
 import { Zap, Database, Brain, ScanLine, CheckCircle2, AlertTriangle, RefreshCw, Upload } from 'lucide-react';
 
-export default function LoadingScreen({ progress, stage, error = null, onImportCardDatabase = null }) {
+export default function LoadingScreen({ progress, stage, error = null, onImportCardDatabase = null,
+  appUpdateState = null, onCheckAppUpdate = null, onInstallAppUpdate = null }) {
   if (error) {
     return (
       <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-rift-900 px-8">
@@ -24,12 +25,7 @@ export default function LoadingScreen({ progress, stage, error = null, onImportC
 
           <div className="mt-4 rounded-2xl border border-rift-600/30 bg-rift-900/60 p-4 text-left">
             <p className="text-xs font-semibold uppercase tracking-wider text-rift-400">What to do</p>
-            <ol className="mt-2 space-y-2 text-sm text-rift-300 list-decimal list-inside">
-              <li>Generate card images and hashes with <span className="text-gold-300">python model/cards_scraper.py</span>.</li>
-              <li>Generate the detector dataset with <span className="text-gold-300">python model/data_creator.py</span>.</li>
-              <li>Train and export the detector with <span className="text-gold-300">python model/train.py</span>.</li>
-              <li>Reload the app after the assets are in place.</li>
-            </ol>
+            <p className="mt-2 text-sm text-rift-300">Check for an app update or reinstall the latest release. You can also import a card database if only card data is missing.</p>
           </div>
 
           <button
@@ -48,6 +44,13 @@ export default function LoadingScreen({ progress, stage, error = null, onImportC
               <Upload className="h-4 w-4" />
               Import card database
             </button>
+          )}
+          {onCheckAppUpdate && (
+            <div className="mt-4 space-y-2">
+              <p className="text-xs text-rift-300" role="status">{appUpdateState?.message}</p>
+              <button onClick={onCheckAppUpdate} disabled={['checking', 'downloading', 'installing', 'relaunching'].includes(appUpdateState?.status)} className="btn-ghost px-4 py-2">Check for updates</button>
+              {appUpdateState?.status === 'available' && <button onClick={onInstallAppUpdate} className="btn-primary px-4 py-2">Install update</button>}
+            </div>
           )}
         </div>
       </div>

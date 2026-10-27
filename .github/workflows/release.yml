@@ -205,6 +205,30 @@ jobs:
           Copy-Item $modelSource 'public/models' -Recurse -Force
           Copy-Item $cardSource 'public/cards' -Recurse -Force
 
+      - name: Set up Python for card data
+        if: steps.existing_release.outputs.exists != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Refresh bundled card data
+        if: steps.existing_release.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          python -m pip install requests Pillow opencv-python-headless numpy tqdm
+          if ($LASTEXITCODE -ne 0) { throw 'Could not install card pipeline dependencies.' }
+          python model/cards_scraper.py
+          if ($LASTEXITCODE -ne 0) { throw 'Card data refresh failed.' }
+
+      - name: Validate app before packaging
+        if: steps.existing_release.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          npm run check
+          if ($LASTEXITCODE -ne 0) { throw 'App validation failed.' }
+          python -m unittest discover -s tests -p test_cards_scraper.py
+          if ($LASTEXITCODE -ne 0) { throw 'Card pipeline regression failed.' }
+
       - name: Verify updater signing secret
         if: steps.existing_release.outputs.exists != 'true'
         shell: pwsh
@@ -215,9 +239,6 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
             throw 'TAURI_SIGNING_PRIVATE_KEY must be set so Tauri can sign updater artifacts.'
           }
-          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
-            throw 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD must be set for the configured updater signing key.'
-          }
 
       - name: Build Windows installer
         if: steps.existing_release.outputs.exists != 'true'
@@ -226,107 +247,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD.Trim()
+          $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ([string]$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD).Trim()
           npm run desktop:build
 
-      - name: Resolve installer artifacts
+      - name: Resolve and validate installer artifacts
         if: steps.existing_release.outputs.exists != 'true'
         id: installer
         shell: pwsh
-        run: |
-          $releaseDir = Join-Path $env:RUNNER_TEMP 'release-assets'
-          if (Test-Path $releaseDir) {
-            Remove-Item $releaseDir -Recurse -Force
-          }
-          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
-
-          $msi = Get-ChildItem 'src-tauri/target/release/bundle/msi' -File -Filter *.msi |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-          if (-not $msi) {
-            throw 'MSI bundle was not produced.'
-          }
-
-          $msiReleaseFileName = "Riftbound Scanner_${{ steps.version.outputs.release_version }}_x64_en-US.msi"
-          $msiReleaseFilePath = Join-Path $releaseDir $msiReleaseFileName
-
-          Copy-Item $msi.FullName $msiReleaseFilePath -Force
-
-          $bundleRoot = 'src-tauri/target/release/bundle'
-          $signedCandidates = Get-ChildItem $bundleRoot -Recurse -File |
-            Where-Object {
-              $_.Name -notlike '*.sig' -and
-              ($_.Extension -in @('.msi', '.zip')) -and
-              (Test-Path "$($_.FullName).sig")
-            }
-
-          if (-not $signedCandidates) {
-            throw 'No signed updater artifacts were produced. Check TAURI_SIGNING_PRIVATE_KEY and createUpdaterArtifacts.'
-          }
-
-          function Select-UpdaterArtifact {
-            param(
-              [Parameter(Mandatory = $true)] [object[]] $Candidates,
-              [Parameter(Mandatory = $true)] [string] $Kind
-            )
-
-            $matches = $Candidates | Where-Object {
-              $_.DirectoryName -match '[\\/]msi($|[\\/])' -or $_.Name -like '*.msi' -or $_.Name -like '*.msi.zip'
-            }
-
-            $matches |
-              Sort-Object @{ Expression = { if ($_.Extension -eq '.zip') { 0 } else { 1 } } }, @{ Expression = 'LastWriteTime'; Descending = $true } |
-              Select-Object -First 1
-          }
-
-          function Copy-UpdaterArtifact {
-            param(
-              [Parameter(Mandatory = $true)] [System.IO.FileInfo] $Artifact,
-              [Parameter(Mandatory = $true)] [string] $Kind
-            )
-
-            $fileName = if ($Artifact.Extension -eq '.zip') {
-              "Riftbound Scanner_${{ steps.version.outputs.release_version }}_x64_en-US.msi.zip"
-            } else {
-              $msiReleaseFileName
-            }
-
-            $filePath = Join-Path $releaseDir $fileName
-            Copy-Item $Artifact.FullName $filePath -Force
-            Copy-Item "$($Artifact.FullName).sig" "$filePath.sig" -Force
-
-            $signature = (Get-Content "$filePath.sig" -Raw -Encoding UTF8).Trim()
-            $encodedName = [System.Uri]::EscapeDataString($fileName)
-            [ordered]@{
-              signature = $signature
-              url = "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/$encodedName"
-            }
-          }
-
-          $platforms = [ordered]@{}
-          $msiUpdater = Select-UpdaterArtifact -Candidates $signedCandidates -Kind 'msi'
-
-          if ($msiUpdater) {
-            $msiEntry = Copy-UpdaterArtifact -Artifact $msiUpdater -Kind 'msi'
-            $platforms['windows-x86_64-msi'] = $msiEntry
-            $platforms['windows-x86_64'] = $msiEntry
-          }
-
-          if ($platforms.Count -eq 0) {
-            throw 'No Windows updater platform entries could be generated.'
-          }
-
-          $latestJson = [ordered]@{
-            version = '${{ steps.version.outputs.version }}'
-            notes = 'See the GitHub release notes for this version.'
-            pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-            platforms = $platforms
-          } | ConvertTo-Json -Depth 8
-          Set-Content -Path (Join-Path $releaseDir 'latest.json') -Value $latestJson -Encoding UTF8
-
-          "dir=$releaseDir" >> $env:GITHUB_OUTPUT
-          "artifact_name=riftbound-installer-${{ steps.version.outputs.release_version }}" >> $env:GITHUB_OUTPUT
-          "files=$releaseDir/*" >> $env:GITHUB_OUTPUT
+        run: node .github/scripts/prepare-update-release.mjs --output="$env:RUNNER_TEMP/release-assets" --repository="${{ github.repository }}" --tag="${{ steps.version.outputs.tag }}"
 
       - name: Upload installer artifacts
         if: steps.existing_release.outputs.exists != 'true'

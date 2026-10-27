@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Camera, CameraOff, RotateCw, Zap, ZapOff, AlertCircle, ScanLine, Radar } from 'lucide-react';
+import { getScanGuide } from '../../lib/scanGeometry.js';
+import { getScanGuidance, MIN_SIMILARITY_GAP } from '../../lib/scanQuality.js';
 
 const DEBUG_OVERLAY_STORAGE_KEY = 'riftbound_scanner_debug_overlay_enabled';
 
@@ -26,6 +28,7 @@ export default function ScannerCamera({
   error,
   isProcessing,
   lastDetection,
+  captureQuality,
   onStartCamera,
   onStopCamera,
   onToggleFacing,
@@ -99,17 +102,9 @@ export default function ScannerCamera({
     saveStoredBoolean(DEBUG_OVERLAY_STORAGE_KEY, showDebugOverlay);
   }, [showDebugOverlay]);
 
-  const cardAspect = 63 / 88;
-  const guideMaxW = dimensions.w * 0.9;
-  const guideMaxH = dimensions.h * 0.8;
-  let guideW = guideMaxW;
-  let guideH = guideW / cardAspect;
-  if (guideH > guideMaxH) {
-    guideH = guideMaxH;
-    guideW = guideH * cardAspect;
-  }
-  const guideX = (dimensions.w - guideW) / 2;
-  const guideY = (dimensions.h - guideH) / 2;
+  const guide = getScanGuide(dimensions.w, dimensions.h);
+  const { x: guideX, y: guideY, width: guideW, height: guideH } = guide;
+  const guidance = getScanGuidance(captureQuality, lastDetection);
 
   const hasDetection = Boolean(lastDetection?.box);
   const detectionLabel = lastDetection?.matched
@@ -118,10 +113,10 @@ export default function ScannerCamera({
       ? 'Tracking card'
       : null;
   const debugOverlayEnabled = showDebugOverlay;
-  const recognizedDetection = debugOverlayEnabled ? (lastDetection?.matched ? lastDetection : null) : null;
+  const debugDetection = debugOverlayEnabled ? lastDetection : null;
 
   useEffect(() => {
-    if (!debugOverlayEnabled || !isActive || !detectSingleFrame || !captureFrame) {
+    if (!debugOverlayEnabled || autoScanEnabled || !isActive || !detectSingleFrame || !captureFrame) {
       return undefined;
     }
 
@@ -142,7 +137,7 @@ export default function ScannerCamera({
       cancelled = true;
       clearInterval(interval);
     };
-  }, [debugOverlayEnabled, isActive, detectSingleFrame, captureFrame]);
+  }, [debugOverlayEnabled, autoScanEnabled, isActive, detectSingleFrame, captureFrame]);
 
   const detectionOverlay = (() => {
     if (!hasDetection || !videoSize.w || !videoSize.h || !dimensions.w || !dimensions.h) return null;
@@ -300,21 +295,48 @@ export default function ScannerCamera({
       {/* Camera controls */}
       {isActive && (
         <div className="absolute bottom-3 left-3 z-10 flex flex-col gap-2" onClick={e => e.stopPropagation()}>
-          {recognizedDetection?.cardData && (
+          <div role="status" aria-live="polite" className={`max-w-[16rem] rounded-xl border px-3 py-2 text-xs backdrop-blur-sm pointer-events-none ${guidance.issue === 'ready'
+            ? 'border-emerald-400/25 bg-black/70 text-emerald-100'
+            : 'border-amber-400/30 bg-black/75 text-amber-100'}`}>
+            {guidance.message}
+          </div>
+          {debugDetection?.cardData && (
             <div className="min-w-[11rem] max-w-[14rem] rounded-xl border border-gold-400/30 bg-black/70 px-3 py-2 backdrop-blur-sm shadow-lg shadow-black/30 pointer-events-auto">
-              <div className="text-[9px] font-semibold uppercase tracking-[0.24em] text-gold-300/90">Recognized card</div>
+              <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-gold-300/90">
+                {debugDetection.matched ? 'Matched frame' : 'Candidate · not accepted'}
+              </div>
               <div className="mt-1 truncate text-xs font-semibold text-rift-50">
-                {recognizedDetection.cardData.name}
+                {debugDetection.cardData.name}
               </div>
               <div className="mt-0.5 truncate text-[10px] text-rift-300">
-                {recognizedDetection.cardData.setName || recognizedDetection.cardData.set}
-                {typeof recognizedDetection.similarity === 'number' && (
-                  <span className="text-rift-500"> · {(recognizedDetection.similarity * 100).toFixed(1)}%</span>
-                )}
+                {debugDetection.cardData.code || debugDetection.cardData.id}
               </div>
+              {Number.isFinite(debugDetection.similarity) && (
+                <div className="mt-1 text-[10px] text-rift-200">
+                  Score {(debugDetection.similarity * 100).toFixed(1)}%
+                  {Number.isFinite(debugDetection.similarityGap) && (
+                    <span> · gap {(debugDetection.similarityGap * 100).toFixed(1)} pp</span>
+                  )}
+                </div>
+              )}
+              {!debugDetection.matched && (
+                <div className="mt-1 text-[10px] text-amber-200">
+                  {debugDetection.reason === 'ambiguous' ? 'Too close to another card' : 'Artwork score too low'}
+                  <div className="mt-0.5 text-rift-400">
+                    Need ≥{((debugDetection.minSimilarity ?? 0.9) * 100).toFixed(1)}%
+                    {' · gap ≥'}{((debugDetection.minSimilarityGap ?? MIN_SIMILARITY_GAP) * 100).toFixed(1)} pp
+                  </div>
+                </div>
+              )}
+              {Number.isFinite(debugDetection.structureSimilarity) && (
+                <div className="mt-1 text-[9px] text-rift-400">
+                  Color {(debugDetection.colorSimilarity * 100).toFixed(1)}%
+                  {' · structure '}{(debugDetection.structureSimilarity * 100).toFixed(1)}%
+                </div>
+              )}
             </div>
           )}
-          {debugOverlayEnabled && !recognizedDetection?.cardData && (
+          {debugOverlayEnabled && !debugDetection?.cardData && (
             <div className="min-w-[11rem] max-w-[14rem] rounded-xl border border-gold-400/20 bg-black/70 px-3 py-2 backdrop-blur-sm shadow-lg shadow-black/30 pointer-events-auto">
               <div className="text-[9px] font-semibold uppercase tracking-[0.24em] text-gold-300/90">Recognized card</div>
               <div className="mt-1 truncate text-xs font-semibold text-rift-100">Scanning...</div>
