@@ -7,7 +7,7 @@ import { resolveCardImageSource } from '../../lib/cardMatcher.js';
 import CardImage from '../CardImage.jsx';
 import { openDebugScanFolder } from '../../lib/debugScanCapture.js';
 import { getScanEvidence } from '../../lib/scanEvidence.js';
-import { SCANNER_DEBUG_KEY, SCANNER_DIAGNOSTICS_AVAILABLE } from '../../lib/scannerExperiments.js';
+import { SCANNER_DEBUG_KEY, SCANNER_OVERLAY_KEY, SCANNER_DIAGNOSTICS_AVAILABLE } from '../../lib/scannerExperiments.js';
 import ScanRecordingControls from './ScanRecordingControls.jsx';
 
 const DEBUG_OVERLAY_STORAGE_KEY = SCANNER_DEBUG_KEY;
@@ -50,6 +50,8 @@ export default function ScannerCamera({
   onToggleAutoScan,
   debugEnabled,
   onDebugChange,
+  scanOverlayEnabled,
+  onScanOverlayChange,
   debugCapture = { status: 'idle' },
   scanRecording,
   onRetryDebugCapture,
@@ -61,7 +63,11 @@ export default function ScannerCamera({
   const [videoSize, setVideoSize] = useState({ w: 0, h: 0 });
   const [showDebugOverlay, setShowDebugOverlay] = useState(() => SCANNER_DIAGNOSTICS_AVAILABLE && loadStoredBoolean(DEBUG_OVERLAY_STORAGE_KEY, false));
   const [frameSave, setFrameSave] = useState({ status: 'idle', path: null, error: null });
+  const [showScanOverlay, setShowScanOverlay] = useState(() => loadStoredBoolean(SCANNER_OVERLAY_KEY, true));
+  const [expiredDetection, setExpiredDetection] = useState(null);
   const debugOverlayEnabled = SCANNER_DIAGNOSTICS_AVAILABLE && (debugEnabled ?? showDebugOverlay);
+  const scanOverlayVisible = scanOverlayEnabled ?? showScanOverlay;
+  const trackingOverlayEnabled = scanOverlayVisible || debugOverlayEnabled;
 
   const handleSaveNativeFrame = async () => {
     if (frameSave.status === 'saving') return;
@@ -137,11 +143,23 @@ export default function ScannerCamera({
     if(SCANNER_DIAGNOSTICS_AVAILABLE)saveStoredBoolean(DEBUG_OVERLAY_STORAGE_KEY, debugOverlayEnabled);
   }, [debugOverlayEnabled]);
 
+  useEffect(() => {
+    if (!onScanOverlayChange) saveStoredBoolean(SCANNER_OVERLAY_KEY, scanOverlayVisible);
+  }, [scanOverlayVisible, onScanOverlayChange]);
+
+  useEffect(() => {
+    if (!isActive || !lastDetection?.box) return;
+    const observedAt = lastDetection.observedAt ?? lastDetection.timestamp ?? Date.now();
+    const remaining = Math.max(0, 1500 - (Date.now() - observedAt));
+    const timer = setTimeout(() => setExpiredDetection(lastDetection), remaining);
+    return () => clearTimeout(timer);
+  }, [isActive, lastDetection]);
+
   const guide = getScanGuide(dimensions.w, dimensions.h);
   const { x: guideX, y: guideY, width: guideW, height: guideH } = guide;
   const guidance = getScanGuidance(captureQuality, lastDetection);
 
-  const hasDetection = Boolean(lastDetection?.box);
+  const hasDetection = isActive && Boolean(lastDetection?.box) && expiredDetection !== lastDetection;
   const detectionLabel = lastDetection?.matched
     ? 'Tracked card'
     : hasDetection
@@ -154,6 +172,11 @@ export default function ScannerCamera({
     const next = !debugOverlayEnabled;
     if (onDebugChange) onDebugChange(next);
     else setShowDebugOverlay(next);
+  };
+  const handleToggleScanOverlay = () => {
+    const next = !scanOverlayVisible;
+    if (onScanOverlayChange) onScanOverlayChange(next);
+    else setShowScanOverlay(next);
   };
 
   const detectionOverlay = (() => {
@@ -233,8 +256,9 @@ export default function ScannerCamera({
               <polygon points={detectionOverlay.quad} fill="none" stroke="#67e8f9" strokeWidth="2" />
             </svg>
           )}
-          {debugOverlayEnabled && detectionOverlay && (
+          {trackingOverlayEnabled && detectionOverlay && (
             <div
+              aria-label="Tracked card outline"
               className="absolute pointer-events-none z-30"
               style={{
                 left: detectionOverlay.centerX,
@@ -255,7 +279,7 @@ export default function ScannerCamera({
           )}
 
           {/* Detection indicator — centered on screen */}
-          {debugOverlayEnabled && detectionOverlay && (
+          {trackingOverlayEnabled && detectionOverlay && (
             <div className="absolute left-0 right-0 flex justify-center fade-in" style={{ top: guideY + guideH + 12 }}>
               <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-sm ${
                 detectionOverlay.matched ? 'bg-green-500/90' : 'bg-gold-400/90'
@@ -323,6 +347,18 @@ export default function ScannerCamera({
             : 'border-amber-400/30 bg-black/75 text-amber-100'}`}>
             {guidance.message}
           </div>
+          {scanOverlayVisible && !debugOverlayEnabled && hasDetection && lastDetection.cardData && (
+            <div role="status" aria-label="Tracked card preview" className="flex max-w-[17rem] items-center gap-3 rounded-xl border border-gold-400/30 bg-black/75 p-3 backdrop-blur-sm shadow-lg shadow-black/30">
+              <div className="h-24 w-16 shrink-0 overflow-hidden rounded-md bg-rift-800">
+                <CardImage src={resolveCardImageSource(lastDetection.cardData.imageUrl, lastDetection.cardData.id)} alt={lastDetection.cardData.name} className="h-full w-full object-contain" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[10px] font-semibold text-gold-300">{lastDetection.matched ? 'Confirming card' : 'Checking card'}</div>
+                <div className="mt-1 break-words text-sm font-semibold text-white">{lastDetection.cardData.name}</div>
+                <div className="mt-1 text-[10px] text-rift-300">{lastDetection.cardData.code || lastDetection.cardData.id}</div>
+              </div>
+            </div>
+          )}
           {debugDetection?.cardData && (
             <div className="min-w-[11rem] max-w-[14rem] rounded-xl border border-gold-400/30 bg-black/70 px-3 py-2 backdrop-blur-sm shadow-lg shadow-black/30 pointer-events-auto">
               <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-gold-300/90">
@@ -469,6 +505,19 @@ export default function ScannerCamera({
               <CameraOff className="w-4.5 h-4.5" />
             </button>
           </div>
+          <button
+            type="button"
+            onClick={handleToggleScanOverlay}
+            aria-label="Scan overlay"
+            aria-pressed={scanOverlayVisible}
+            title="Show the tracked card while scanning"
+            className={`min-w-[8.5rem] self-start rounded-xl border px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.18em] backdrop-blur-sm transition-all ${
+              scanOverlayVisible ? 'bg-gold-500/20 border-gold-400/40 text-gold-200' : 'bg-black/50 border-white/10 text-white/60 hover:bg-black/70'
+            }`}
+          >
+            <span className="block leading-none">Scan overlay</span>
+            <span className="mt-1 block text-[9px] font-bold tracking-[0.24em]">{scanOverlayVisible ? 'ON' : 'OFF'}</span>
+          </button>
           {SCANNER_DIAGNOSTICS_AVAILABLE && <div className="flex flex-col gap-2">
             {debugOverlayEnabled && captureFrame && <>
               <div className="max-w-[20rem] rounded-xl border border-cyan-300/30 bg-black/80 px-3 py-2 text-[10px] text-cyan-100">

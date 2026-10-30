@@ -9,6 +9,7 @@ Application and Windows MSI version: `26.10.3001`.
 - A guarded fallback supports borderless cards missed by the normal detector threshold. Coarse color similarity alone cannot authorize those proposals.
 - Perspective correction and English text verification are enabled by default. OCR workers and language data are bundled for offline use.
 - Normal settings show scanning guidance instead of a similarity slider or experimental feature switches. The auto-scan button displays its state.
+- A separate Scan overlay control shows the tracked card outline, thumbnail, name and verification status. It defaults to ON, remembers the preference and clears stale previews without enabling debug capture or changing auto-scan.
 - Debug overlays, image exports, session recording and model-comparison controls are development-only. Production ignores stored debug preferences and excludes native diagnostic commands.
 
 ## Updating and stored data

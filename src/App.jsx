@@ -32,7 +32,7 @@ import { SCAN_SOUND_STORAGE_KEY } from './lib/scanSound.js';
 import { CardRectifier } from './lib/cardRectifier.js';
 import { CardTextReader } from './lib/cardTextReader.js';
 import { CardTextVerification } from './lib/cardTextVerification.js';
-import { SCANNER_DEBUG_KEY, SCANNER_DIAGNOSTICS_AVAILABLE, normalizeScannerExperiments } from './lib/scannerExperiments.js';
+import { SCANNER_DEBUG_KEY, SCANNER_OVERLAY_KEY, SCANNER_DIAGNOSTICS_AVAILABLE, normalizeScannerExperiments } from './lib/scannerExperiments.js';
 import { AUTOMATIC_ARTWORK_MINIMUM } from './lib/scanAcceptance.js';
 import { saveAcceptedDebugScan } from './lib/debugScanCapture.js';
 import { useScanSessionRecording } from './hooks/useScanSessionRecording.js';
@@ -123,6 +123,7 @@ export default function App() {
   const [scanAddAnimation, setScanAddAnimation] = useState(null);
 
   const [debugEnabled, setDebugEnabled] = useState(() => SCANNER_DIAGNOSTICS_AVAILABLE && loadFromStorage(SCANNER_DEBUG_KEY, false) === true);
+  const [scanOverlayEnabled, setScanOverlayEnabled] = useState(() => loadFromStorage(SCANNER_OVERLAY_KEY, true) === true);
   const [debugCapture, setDebugCapture] = useState({ status: 'idle' });
   const lastDebugAcceptedRef = useRef(null);
   const debugSaveQueueRef = useRef(null);
@@ -187,6 +188,7 @@ export default function App() {
     return rectifierRef.current.refine(source, box);
   }, []);
   useEffect(() => { if(SCANNER_DIAGNOSTICS_AVAILABLE)saveToStorage(SCANNER_DEBUG_KEY, debugEnabled); }, [debugEnabled]);
+  useEffect(() => { saveToStorage(SCANNER_OVERLAY_KEY, scanOverlayEnabled); }, [scanOverlayEnabled]);
   useEffect(() => {
     if (!scannerExperiments.perspective) { rectifierRef.current?.dispose(); rectifierRef.current = null; }
     return () => { rectifierRef.current?.dispose(); rectifierRef.current = null; };
@@ -246,6 +248,7 @@ export default function App() {
     [STORAGE_KEYS.CAMERA_PROFILES]: cameraProfiles,
     [SCAN_SOUND_STORAGE_KEY]: scanSound.settings,
     [SCANNER_DEBUG_KEY]: debugEnabled,
+    [SCANNER_OVERLAY_KEY]: scanOverlayEnabled,
   };
 
   useEffect(() => {
@@ -1142,6 +1145,8 @@ export default function App() {
             onToggleAutoScan={autoScan.toggleAutoScan}
             debugEnabled={debugEnabled}
             onDebugChange={handleDebugChange}
+            scanOverlayEnabled={scanOverlayEnabled}
+            onScanOverlayChange={setScanOverlayEnabled}
             debugCapture={debugCapture}
             scanRecording={scanRecording}
             onRetryDebugCapture={() => { if (lastDebugAcceptedRef.current) captureAcceptedDebugScan(lastDebugAcceptedRef.current); }}

@@ -2,6 +2,8 @@
 
 Perspective correction and English text verification are enabled by default. Normal settings have no similarity slider or feature switches. Debug overlays, capture exports, session recording and model-comparison controls are available only in development builds. Production ignores stored debug preferences and excludes the native diagnostic commands.
 
+The separate **Scan overlay** control is available in release and development builds. It displays the live outline and a compact candidate preview without diagnostic metrics or export controls. Its preference defaults to ON and is included in the user snapshot saved before an app update. Toggling it does not change recognition context, acceptance, auto-scan or debug recording. Unrefreshed tracking expires after 1.5 seconds; a late expiry cannot remove a newer observation.
+
 ## Recognition pipeline
 
 `useCamera` captures the visible guide region at native resolution and prefers clearer recent frames. Copies of the same video frame cannot count as independent evidence. Motion, a camera or filter change, and database revisions invalidate unfinished evidence.

@@ -107,6 +107,8 @@ export default function ScanTab({
   onToggleAutoScan,
   debugEnabled,
   onDebugChange,
+  scanOverlayEnabled,
+  onScanOverlayChange,
   debugCapture,
   scanRecording,
   onRetryDebugCapture,
@@ -849,6 +851,8 @@ export default function ScanTab({
             onToggleAutoScan={onToggleAutoScan}
             debugEnabled={debugEnabled}
             onDebugChange={onDebugChange}
+            scanOverlayEnabled={scanOverlayEnabled}
+            onScanOverlayChange={onScanOverlayChange}
             debugCapture={debugCapture}
             scanRecording={scanRecording}
             onRetryDebugCapture={onRetryDebugCapture}

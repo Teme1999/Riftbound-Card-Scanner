@@ -21,6 +21,68 @@ test('production ignores stored debug preferences and cannot enable diagnostic c
   assert.equal(nodes(tree,node=>node.type?.name==='ScanRecordingControls').length,0);
 });
 
+test('production scan overlay shows a candidate without enabling debug or capturing frames',()=>{
+  let auto;
+  const runtime=createRuntime({development:false,mocks:{
+    'src/hooks/useAutoScan.js':{useAutoScan:options=>{auto=options;return{autoScanEnabled:false,toggleAutoScan(){},setLastCardId(){}};}},
+  }});
+  const app=runtime.mount(runtime.load('src/App.jsx').default,[false]);
+  const scan=()=>componentProps(app.render(),'ScanTab');
+  assert.equal(scan().scanOverlayEnabled,true);assert.equal(auto.debugEnabled,false);
+  scan().onScanOverlayChange(false);assert.equal(scan().scanOverlayEnabled,false);
+  scan().onScanOverlayChange(true);assert.equal(scan().debugEnabled,false);assert.equal(scan().scanRecording,null);
+
+  const camera=runtime.mount(runtime.load('src/components/scanner/ScannerCamera.jsx').default,[{w:1280,h:720},{w:1920,h:1080}]);
+  const props={videoRef:{current:null},isActive:true,autoScanEnabled:false,
+    captureFrame(){throw new Error('Overlay cannot capture a frame');},
+    lastDetection:{observedAt:Date.now(),matched:false,box:{cx:960,cy:540,w:300,h:420,angle:0},
+      cardData:{id:'fixture-001',name:'Test Card',code:'FIX-001'}}};
+  let tree=camera.render(props);
+  assert.equal(nodes(tree,n=>n.props?.['aria-label']==='Tracked card outline').length,1);
+  const preview=nodes(tree,n=>n.props?.['aria-label']==='Tracked card preview')[0];
+  assert.ok(JSON.stringify(preview).includes('Test Card'));assert.ok(JSON.stringify(preview).includes('Checking card'));
+  assert.equal(nodes(tree,n=>n.props?.['aria-label']==='Scan overlay')[0].props['aria-pressed'],true);
+  assert.equal(nodes(tree,n=>n.props?.['aria-label']==='Debug overlay').length,0);
+  assert.equal(JSON.stringify(tree).includes('Save native frame'),false);
+  nodes(tree,n=>n.props?.['aria-label']==='Scan overlay')[0].props.onClick();
+  tree=camera.render(props);
+  assert.equal(nodes(tree,n=>n.props?.['aria-label']==='Tracked card preview').length,0);
+  assert.equal(nodes(tree,n=>n.props?.['aria-label']==='Tracked card outline').length,0);
+  assert.equal(auto.debugEnabled,false);assert.equal(auto.isProcessing,false);
+});
+
+test('the tracking preview expires on a frozen frame and late expiry cannot hide a newer card',()=>{
+  let now=1000;const timers=[];
+  const runtime=createRuntime({development:false,globals:{Date:class extends Date{static now(){return now;}},
+    setTimeout:(expire,delay)=>{timers.push({expire,delay});return timers.length;},clearTimeout(){}}});
+  const camera=runtime.mount(runtime.load('src/components/scanner/ScannerCamera.jsx').default);
+  const first={observedAt:1000,box:{},cardData:{id:'first',name:'First Card'},matched:false};
+  const props={videoRef:{current:null},isActive:true,lastDetection:first};
+  const preview=tree=>nodes(tree,n=>n.props?.['aria-label']==='Tracked card preview');
+  assert.equal(preview(camera.render(props)).length,1);camera.runEffects();assert.equal(timers[0].delay,1500);
+  now=2000;const second={...first,observedAt:2000,cardData:{id:'second',name:'Second Card'},matched:true};
+  const next={...props,lastDetection:second};camera.render(next);camera.runEffects();
+  timers[0].expire();assert.equal(preview(camera.render(next)).length,1);
+  assert.ok(JSON.stringify(preview(camera.render(next))).includes('Confirming card'));
+  timers[1].expire();assert.equal(preview(camera.render(next)).length,0);
+  assert.equal(preview(camera.render({...next,isActive:false})).length,0);
+  assert.equal(preview(camera.render({...next,lastDetection:{reason:'outside-guide'}})).length,0);
+});
+
+test('scan overlay preference is independent of stored debug and survives a production restart',()=>{
+  const key='riftbound_scanner_overlay_enabled';
+  const runtime=createRuntime({development:false,storage:{[key]:false,riftbound_scanner_debug_overlay_enabled:true}});
+  const app=runtime.mount(runtime.load('src/App.jsx').default,[false]);
+  let scan=componentProps(app.render(),'ScanTab');assert.equal(scan.scanOverlayEnabled,false);assert.equal(scan.debugEnabled,false);
+  scan.onScanOverlayChange(true);app.render();
+  // Run only persistence effects, avoiding app initialization in this isolated test.
+  const camera=runtime.mount(runtime.load('src/components/scanner/ScannerCamera.jsx').default);
+  camera.render({videoRef:{current:null},isActive:false,scanOverlayEnabled:true});camera.runEffects();
+  assert.equal(runtime.values.get(key),'true');
+  const restarted=runtime.mount(runtime.load('src/App.jsx').default,[false]);
+  scan=componentProps(restarted.render(),'ScanTab');assert.equal(scan.scanOverlayEnabled,true);assert.equal(scan.debugEnabled,false);
+});
+
 test('production debug and fake requests cannot force auto-scan, while normal auto-scan still works',()=>{
   let timers=0;const runtime=createRuntime({development:false,globals:{setInterval(){timers++;return 1;}}});
   const hook=runtime.mount(runtime.load('src/hooks/useAutoScan.js').useAutoScan);
