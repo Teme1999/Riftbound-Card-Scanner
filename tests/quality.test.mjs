@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { measureImageQuality, BestFrameBuffer, frameDifference, isReliableScanResult, getScanGuidance } from '../src/lib/scanQuality.js';
+import { measureImageQuality, BestFrameBuffer, frameDifference, isReliableScanResult, getScanGuidance, isScanFrameCancelled } from '../src/lib/scanQuality.js';
 import { getScanGuide, getVideoScanRegion, selectGuideDetection, mapDetectionBox, getDetectorLetterbox } from '../src/lib/scanGeometry.js';
 import { openCameraStream, applyCameraAutoModes, supportsTorch, normalizeCameraProfile } from '../src/lib/cameraControls.js';
 import { createRuntime, componentProps } from './helpers/runtime.mjs';
@@ -82,6 +82,14 @@ test('card movement or a layout change invalidates older in-flight images', () =
   assert.equal(buffer.frames.length, 1);
 });
 
+test('motion also invalidates an in-flight source that has aged out of the three-frame buffer',()=>{
+  const buffer=new BestFrameBuffer(),old=buffered(0,1);
+  buffer.add(old);buffer.add(buffered(400,.8));
+  assert.equal(buffer.frames.includes(old),false);assert.equal(isScanFrameCancelled(old.canvas),false);
+  buffer.add(buffered(500,.8,[255,0,255,0]));
+  assert.equal(isScanFrameCancelled(old.canvas),true);
+});
+
 test('a stable new frame takes precedence over the moving frame', () => {
   const buffer = new BestFrameBuffer();
   buffer.add(buffered(0, 1));
@@ -143,6 +151,14 @@ test('guidance uses recent card quality and discards stale observations', () => 
   assert.equal(getScanGuidance({ issue: 'too-dark' }, last, 2000).issue, 'too-dark');
   assert.equal(getScanGuidance({ issue: 'too-dark' }, { observedAt: 100, reason: 'outside-guide' }, 200).issue, 'too-dark');
   assert.equal(getScanGuidance({ issue: 'moving' }, { observedAt: 100, matched: true }, 200).issue, 'moving');
+});
+
+test('pending text confirmation asks for a steady card instead of moving an already readable candidate',()=>{
+  const pending={observedAt:100,matched:false,reason:'low-similarity',quality:{acceptable:true},
+    textVerification:{status:'pending',artworkFallbackAllowed:true,confirmedReads:1}};
+  assert.equal(getScanGuidance(null,pending,200).issue,'reading-text');
+  assert.equal(getScanGuidance({issue:'moving'},pending,200).issue,'moving');
+  assert.equal(getScanGuidance(null,{...pending,reason:'text-conflict',textVerification:{status:'conflict'}},200).issue,'text-conflict');
 });
 
 test('camera profiles negotiate format hints and retain the selected camera on fallback', async () => {

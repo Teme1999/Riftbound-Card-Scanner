@@ -2814,7 +2814,7 @@ dependencies = [
 
 [[package]]
 name = "riftbound_scanner"
-version = "26.5.12-1"
+version = "26.10.3001"
 dependencies = [
  "directories",
  "image",

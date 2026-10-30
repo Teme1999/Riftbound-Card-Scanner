@@ -9,6 +9,11 @@ export async function invokeDesktopCommand(command, payload = {}) {
   return invoke(command, payload);
 }
 
+export async function invokeDesktopBinaryCommand(command, bytes, headers) {
+  if (!isDesktopRuntime()) throw new Error('Desktop bridge is not available in this runtime.');
+  return invoke(command, bytes, { headers });
+}
+
 export async function openDesktopUrl(url) {
   if (!isDesktopRuntime()) {
     window.open(url, '_blank', 'noopener,noreferrer');

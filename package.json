@@ -1,8 +1,8 @@
 {
   "name": "riftbound-scanner",
   "private": true,
-  "version": "26.5.12-1",
-  "releaseVersion": "2026.05.12.1",
+  "version": "26.10.3001",
+  "releaseVersion": "2026.10.30.1",
   "license": "MIT",
   "homepage": "https://github.com/Teme1999/Riftbound-Card-Scanner",
   "repository": {
@@ -11,7 +11,7 @@
   },
   "type": "module",
   "scripts": {
-    "test": "node --test tests/collection.test.mjs tests/scanner.test.mjs tests/quality.test.mjs tests/database.test.mjs tests/prices.test.mjs tests/updater.test.mjs tests/release.test.mjs tests/sound.test.mjs tests/matching.test.mjs",
+    "test": "node --test tests/collection.test.mjs tests/scanner.test.mjs tests/quality.test.mjs tests/database.test.mjs tests/prices.test.mjs tests/updater.test.mjs tests/release.test.mjs tests/sound.test.mjs tests/matching.test.mjs tests/perspective.test.mjs tests/text-verification.test.mjs tests/debug-scans.test.mjs tests/scan-recording.test.mjs tests/visual-verification.test.mjs tests/runes.test.mjs",
     "test:release": "node --test tests/release.test.mjs",
     "test:cards": "node --test tests/card-assets.test.mjs",
     "check:assets": "node scripts/check-runtime-assets.mjs",
@@ -27,10 +27,13 @@
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
+    "@techstark/opencv-js": "4.12.0-release.1",
+    "@tesseract.js-data/eng": "1.0.0",
     "lucide-react": "^0.263.1",
     "onnxruntime-web": "^1.26.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "tesseract.js": "7.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.1",

@@ -7,6 +7,12 @@ const requiredFiles = [
   'public/card-hashes.json',
   'public/models/yolo11n-obb-riftbound.onnx',
   'public/models/yolo11n-obb-riftbound-q8.onnx',
+  'node_modules/tesseract.js/dist/worker.min.js',
+  'node_modules/@techstark/opencv-js/dist/opencv.js',
+  'node_modules/@techstark/opencv-js/LICENSE',
+  'node_modules/@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz',
+  ...['', '-simd', '-relaxedsimd'].flatMap((suffix) => ['.wasm', '.wasm.js'].map((extension) =>
+    `node_modules/tesseract.js-core/tesseract-core${suffix}-lstm${extension}`)),
 ];
 
 const failures = [];

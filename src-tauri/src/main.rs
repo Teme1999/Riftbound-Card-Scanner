@@ -9,6 +9,10 @@ use serde_json::Value;
 use std::{collections::HashSet, fs, path::Path, time::Duration};
 use tauri::{Emitter, Manager};
 use url::Url;
+#[cfg(any(debug_assertions, test))]
+mod debug_recording;
+#[cfg(any(debug_assertions, test))]
+mod diagnostic_exports;
 
 const GALLERY_URL: &str = "https://playriftbound.com/en-us/card-gallery/";
 const GRID_SIZE: usize = 16;
@@ -59,6 +63,12 @@ fn runtime_info(app: tauri::AppHandle) -> RuntimeInfo {
 fn open_storage_folder(app: tauri::AppHandle, folder: String) -> Result<(), String> {
   let path = match folder.as_str() {
     "cards" => card_cache_directory()?,
+    #[cfg(debug_assertions)]
+    "native-frames" => diagnostic_exports::native_frame_directory()?,
+    #[cfg(debug_assertions)]
+    "debug-scans" => diagnostic_exports::debug_scan_directory()?,
+    #[cfg(debug_assertions)]
+    "debug-recordings" => card_cache_directory()?.with_file_name("debug-recordings"),
     "profile" => app.path().app_local_data_dir().map_err(|error| error.to_string())?.join("EBWebView"),
     _ => return Err("Unknown application data folder.".to_string()),
   };
@@ -725,11 +735,17 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 fn main() {
-  tauri::Builder::default()
+  let app = tauri::Builder::default()
     .plugin(tauri_plugin_process::init())
-    .plugin(tauri_plugin_updater::Builder::new().build())
-    .invoke_handler(tauri::generate_handler![runtime_info, update_card_database, fetch_exchange_rates, open_external_url, open_storage_folder])
-    .run(tauri::generate_context!())
+    .plugin(tauri_plugin_updater::Builder::new().build());
+  #[cfg(debug_assertions)]
+  let app = app.manage(debug_recording::RecordingState::default())
+    .invoke_handler(tauri::generate_handler![runtime_info, update_card_database, fetch_exchange_rates, open_external_url, open_storage_folder,
+      diagnostic_exports::save_native_frame, diagnostic_exports::save_debug_scan,
+      debug_recording::start_debug_recording, debug_recording::append_debug_recording, debug_recording::record_debug_events, debug_recording::finish_debug_recording]);
+  #[cfg(not(debug_assertions))]
+  let app = app.invoke_handler(tauri::generate_handler![runtime_info, update_card_database, fetch_exchange_rates, open_external_url, open_storage_folder]);
+  app.run(tauri::generate_context!())
     .expect("error while running tauri application");
 }
 
@@ -765,4 +781,5 @@ mod tests {
     let missing = missing_gallery_cards(vec![json!({}), gallery_card(""), gallery_card("rad-001"), gallery_card("rad-001")], &HashSet::new());
     assert_eq!(missing, vec![gallery_card("rad-001")]);
   }
+
 }

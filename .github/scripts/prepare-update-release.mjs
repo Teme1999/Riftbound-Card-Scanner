@@ -18,14 +18,17 @@ export async function prepareUpdateRelease({ root = process.cwd(), output, repos
   const config = JSON.parse(await fs.readFile(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'));
   if (pkg.version !== config.version || tag !== `v${pkg.releaseVersion}`) throw new Error('Release version files/tag disagree.');
   const files = await filesUnder(path.join(root, 'src-tauri/target/release/bundle/msi'));
+  // A local build folder can also contain signed installers from older releases.
+  // Never relabel one of those as the current app version.
+  const versionFiles = files.filter(filename => path.basename(filename).includes(`_${pkg.version}_`));
   const candidates = [];
-  for (const file of files.filter((filename) => /\.msi(?:\.zip)?$/i.test(filename))) {
+  for (const file of versionFiles.filter((filename) => /\.msi(?:\.zip)?$/i.test(filename))) {
     if (files.includes(`${file}.sig`)) candidates.push({ file, time:(await fs.stat(file)).mtimeMs });
   }
   candidates.sort((a,b) => Number(b.file.endsWith('.zip')) - Number(a.file.endsWith('.zip')) || b.time - a.time);
-  if (!candidates.length) throw new Error('No signed MSI updater artifact was produced.');
+  if (!candidates.length) throw new Error(`No signed MSI updater artifact for version ${pkg.version} was produced.`);
   const updater = candidates[0].file;
-  const installer = updater.endsWith('.msi') ? updater : files.find((file) => file.endsWith('.msi'));
+  const installer = updater.endsWith('.msi') ? updater : versionFiles.find(file => file === updater.slice(0, -4));
   if (!installer) throw new Error('No MSI installer was produced.');
   await fs.mkdir(output, { recursive:true });
   const base = `RiftboundScanner_${pkg.releaseVersion}_x64_en-US.msi`;

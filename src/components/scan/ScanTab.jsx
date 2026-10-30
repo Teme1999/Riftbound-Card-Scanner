@@ -1,10 +1,13 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Camera, Upload, Loader2, RotateCcw, ScanLine, Download, Plus, CheckSquare, Square, Trash2, ChevronsRight, ChevronDown, Search } from 'lucide-react';
 import ScannerCamera from '../scanner/ScannerCamera.jsx';
+import { AUTOMATIC_ARTWORK_MINIMUM } from '../../lib/scanAcceptance.js';
 import CardCounter from '../scanner/CardCounter.jsx';
 import ImageDropZone from '../identify/ImageDropZone.jsx';
 import DetectionCanvas, { DETECTION_COLORS } from '../identify/DetectionCanvas.jsx';
 import CardDetailPanel from '../identify/CardDetailPanel.jsx';
+import { CardTextIndex } from '../../lib/cardTextIdentity.js';
+import { recognizeCard, buildRecognitionResult, applyTextVerification, matchFromRanking } from '../../lib/cardRecognition.js';
 import { getDetector } from '../../lib/yoloDetector.js';
 import { getMatcher, filterCardsBySet } from '../../lib/cardMatcher.js';
 import { downloadCSV, validateForExport } from '../../lib/csvExporter.js';
@@ -22,78 +25,6 @@ const PENDING_SORT_OPTIONS = [
   { value: 'price', label: 'Price' },
   { value: 'amount', label: 'Amount' },
 ];
-
-// --- Card matching utilities ---
-
-function rotateCanvas90(canvas) {
-  const rot = document.createElement('canvas');
-  rot.width = canvas.height;
-  rot.height = canvas.width;
-  const rctx = rot.getContext('2d');
-  rctx.translate(rot.width / 2, rot.height / 2);
-  rctx.rotate(Math.PI / 2);
-  rctx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
-  return rot;
-}
-
-function cropRotated(img, cx, cy, w, h, angle) {
-  // Use card diagonal (not image diagonal) for intermediate canvas — saves memory
-  const cardDiag = Math.sqrt(w * w + h * h);
-  const size = Math.ceil(cardDiag) + 4;
-  const big = document.createElement('canvas');
-  big.width = size;
-  big.height = size;
-  const bctx = big.getContext('2d');
-  const bcx = size / 2;
-  const bcy = size / 2;
-  bctx.translate(bcx, bcy);
-  bctx.rotate(-angle);
-  bctx.drawImage(img, -cx, -cy);
-
-  const c = document.createElement('canvas');
-  c.width = Math.round(w);
-  c.height = Math.round(h);
-  c.getContext('2d').drawImage(big, bcx - w / 2, bcy - h / 2, w, h, 0, 0, w, h);
-
-  if (w > h) {
-    const rot = document.createElement('canvas');
-    rot.width = Math.round(h);
-    rot.height = Math.round(w);
-    const rctx = rot.getContext('2d');
-    rctx.translate(rot.width / 2, rot.height / 2);
-    rctx.rotate(Math.PI / 2);
-    rctx.drawImage(c, -c.width / 2, -c.height / 2);
-    return rot;
-  }
-  return c;
-}
-
-function identifyCard(cropCanvas, matcher, setFilter = 'all') {
-  if (!matcher || !matcher.cards || matcher.cards.length === 0) return null;
-
-  // Camera and uploaded photos must use the same preprocessing and score.
-  // Keep the existing quarter-turn retry, merging candidates by card ID.
-  const byId = new Map();
-  for (const source of [cropCanvas, rotateCanvas90(cropCanvas)]) {
-    for (const entry of matcher.rank(source, { setFilter, limit: 3 })) {
-      const previous = byId.get(entry.card.id);
-      if (!previous || entry.similarity > previous.similarity) byId.set(entry.card.id, entry);
-    }
-  }
-  const ranked = [...byId.values()].sort((a, b) => b.similarity - a.similarity);
-
-  const toCardData = (r) => ({
-    ...resolveCardData(r.card),
-    sim: (r.similarity * 100).toFixed(1),
-    similarity: r.similarity,
-  });
-
-  return {
-    card: ranked[0]?.card || null,
-    similarity: ranked[0]?.similarity || 0,
-    top3: ranked.slice(0, 3).map(toCardData),
-  };
-}
 
 /** Resize image to fit within maxDim, returns a new Image element */
 const MAX_IMAGE_DIM = 2048;
@@ -152,6 +83,7 @@ function pendingToDetection(card) {
 
 export default function ScanTab({
   camera,
+  onCameraViewChange,
   detection,
   onSnapScan,
   pendingCards,
@@ -167,9 +99,17 @@ export default function ScanTab({
   onAddCardsToExport,
   showNotification,
   batchDefaults,
-  minConfidence,
+  scannerExperiments,
+  onUpdateScannerExperiments,
+  cropRefiner = null,
+  textVerifier = null,
   autoScanEnabled,
   onToggleAutoScan,
+  debugEnabled,
+  onDebugChange,
+  debugCapture,
+  scanRecording,
+  onRetryDebugCapture,
   exportFormat,
   scanSetFilter,
   scanSetOptions,
@@ -179,6 +119,7 @@ export default function ScanTab({
   priceExchangeRates,
 }) {
   const [scanMode, setScanMode] = useState('camera');
+  useEffect(() => { onCameraViewChange?.(scanMode === 'camera'); return () => onCameraViewChange?.(false); }, [scanMode, onCameraViewChange]);
   const [sheetExpanded, setSheetExpanded] = useState(false);
   const [checkedPendingIds, setCheckedPendingIds] = useState(new Set());
   const [pendingSort, setPendingSort] = useState('original');
@@ -198,6 +139,9 @@ export default function ScanTab({
   const mobileDetectionRefs = useRef([]);
   const desktopDetectionRefs = useRef([]);
   const originalImageRef = useRef(null);
+  const photoEpochRef = useRef(0);
+  useEffect(() => () => { photoEpochRef.current++; textVerifier?.reset(); }, [textVerifier, cropRefiner, scanSetFilter]);
+  useEffect(() => { setIsProcessing(false); }, [textVerifier, cropRefiner, scanSetFilter]);
 
   const totalPending = pendingCards.reduce((sum, c) => sum + c.quantity, 0);
   const totalPendingValue = pendingCards.reduce((sum, card) => {
@@ -535,13 +479,17 @@ export default function ScanTab({
 
   // Clean switch between modes
   const handleModeChange = useCallback((mode) => {
+    photoEpochRef.current++;
+    setIsProcessing(false);
+    textVerifier?.reset();
     const wasActive = camera.isActive;
     camera.stopCamera();
     setScanMode(mode);
+    onCameraViewChange?.(mode === 'camera');
     if (mode === 'camera' && wasActive) {
       camera.startCamera();
     }
-  }, [camera]);
+  }, [camera, textVerifier, onCameraViewChange]);
 
   // Scroll to selected detection (delayed to allow card expansion first)
   useEffect(() => {
@@ -561,12 +509,15 @@ export default function ScanTab({
   // --- Upload mode handlers ---
 
   const handleImageSelected = (file) => {
+    const selection = ++photoEpochRef.current;
+    textVerifier?.reset();
     setFileName(file.name);
     setDetections([]);
     setSelectedDetection(null);
     setCheckedIndices(new Set());
     const img = new Image();
     img.onload = () => {
+      if (selection !== photoEpochRef.current) return;
       originalImageRef.current = img;
       const resized = resizeImage(img);
       if (resized === img) {
@@ -574,6 +525,7 @@ export default function ScanTab({
         runDetection(img);
       } else {
         resized.onload = () => {
+          if (selection !== photoEpochRef.current) return;
           setUploadedImage(resized);
           runDetection(resized);
         };
@@ -583,6 +535,7 @@ export default function ScanTab({
   };
 
   const runDetection = async (imageElement) => {
+    const epoch = ++photoEpochRef.current;
     setIsProcessing(true);
     setDetections([]);
     setCheckedIndices(new Set());
@@ -599,6 +552,7 @@ export default function ScanTab({
         return;
       }
       const rawDetections = await detector.detect(canvas);
+      if (epoch !== photoEpochRef.current) return;
       if (!rawDetections || rawDetections.length === 0) {
         showNotification('No cards detected in the image', 'info');
         setIsProcessing(false);
@@ -614,19 +568,32 @@ export default function ScanTab({
       const matcher = getMatcher();
       const results = [];
       for (const det of rawDetections) {
-        const crop = cropRotated(
-          originalImage,
-          det.box.cx * cropScale,
-          det.box.cy * cropScale,
-          det.box.w * cropScale,
-          det.box.h * cropScale,
-          det.box.angle
-        );
-        let matchResult = null;
-        if (matcher.ready) matchResult = identifyCard(crop, matcher, scanSetFilter);
+        const recognition = await recognizeCard({ source: originalImage,
+          detection: { box: { ...det.box, cx: det.box.cx * cropScale, cy: det.box.cy * cropScale,
+            w: det.box.w * cropScale, h: det.box.h * cropScale } },
+          matcher, setFilter: scanSetFilter, photo: true, cropRefiner, candidates: Boolean(textVerifier) });
+        const crop = recognition.crop;
+        if (epoch !== photoEpochRef.current) return;
+        let matchResult = recognition.match;
+        let textVerification = null;
+        let recognitionResult = buildRecognitionResult(matchResult, recognition.quality, AUTOMATIC_ARTWORK_MINIMUM, { geometryConflict: recognition.geometryConflict });
+        if (textVerifier && matchResult?.card) {
+          textVerification = await textVerifier.verifyPhoto(recognition.textCrop, { hint: matchResult.card,
+            alternativeCrops: recognition.alternateTextCrops,
+            index: new CardTextIndex(matcher.cards), frameId: `photo-${epoch}-${results.length}` });
+          if (epoch !== photoEpochRef.current) return;
+          const result = applyTextVerification(recognitionResult, matchResult, textVerification, { photo: true });
+          recognitionResult = result;
+          textVerification = result.textVerification;
+          const confirmed = matchResult.candidates?.find((entry) => entry.card.id === result.cardData?.id);
+          if (result.confirmationMethod === 'text' && confirmed) {
+            matchResult = { ...matchFromRanking([confirmed, ...matchResult.candidates.filter((entry) => entry.card.id !== confirmed.card.id)]), textVerification };
+          } else matchResult = { ...matchResult, textVerification };
+        }
         results.push({
           cx: det.box.cx, cy: det.box.cy, w: det.box.w, h: det.box.h,
           angle: det.box.angle, confidence: det.confidence, cropCanvas: crop, matchResult,
+          geometryConflict: recognition.geometryConflict, cropMethod: recognition.cropMethod, textVerification, recognitionResult,
           entry: matchResult?.card ? createCardEntry({
             cardData: resolveCardData(matchResult.card),
             confidence: det.confidence,
@@ -636,7 +603,7 @@ export default function ScanTab({
       }
 
       const matched = matcher.ready
-        ? results.filter(r => r.matchResult && r.matchResult.similarity >= minConfidence)
+        ? results.filter(r => r.matchResult && (r.recognitionResult.matched || r.matchResult.similarity >= AUTOMATIC_ARTWORK_MINIMUM || r.geometryConflict || r.textVerification?.status === 'conflict'))
         : results;
       setDetections(matched);
       if (matched.length > 0) {
@@ -647,10 +614,11 @@ export default function ScanTab({
       console.error('[ScanTab] Detection error:', error);
       showNotification('Error during detection', 'error');
     }
-    setIsProcessing(false);
+    if (epoch === photoEpochRef.current) setIsProcessing(false);
   };
 
   const handleReset = () => {
+    photoEpochRef.current++; textVerifier?.reset(); setIsProcessing(false);
     setUploadedImage(null);
     setFileName('');
     setDetections([]);
@@ -879,6 +847,13 @@ export default function ScanTab({
             onRefocus={camera.refocus}
             autoScanEnabled={autoScanEnabled}
             onToggleAutoScan={onToggleAutoScan}
+            debugEnabled={debugEnabled}
+            onDebugChange={onDebugChange}
+            debugCapture={debugCapture}
+            scanRecording={scanRecording}
+            onRetryDebugCapture={onRetryDebugCapture}
+            scannerExperiments={scannerExperiments}
+            onUpdateScannerExperiments={onUpdateScannerExperiments}
             captureFrame={camera.captureFrame}
             detectSingleFrame={detection.detectSingleFrame}
           />

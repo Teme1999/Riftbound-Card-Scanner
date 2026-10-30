@@ -122,6 +122,15 @@ export default function CardDetailPanel({
       }`}
       style={{ borderColor: borderColorStyle }}
     >
+      {detection.geometryConflict && (
+        <div className="px-3 py-2 text-xs text-amber-200 bg-amber-500/10">Card crops disagree. Check the card identity before adding it.</div>
+      )}
+      {detection.textVerification && (
+        <div className={`px-3 py-2 text-xs ${detection.textVerification.status === 'conflict' ? 'text-amber-200 bg-amber-500/10' : 'text-rift-300 bg-rift-900/40'}`}>
+          Text verification: {detection.textVerification.status}
+          {detection.textVerification.status === 'conflict' && ' — check the card identity before adding it.'}
+        </div>
+      )}
       {/* Collapsed header - always visible, tap anywhere to expand */}
       <div
         className="flex w-full min-w-0 items-center cursor-pointer"
