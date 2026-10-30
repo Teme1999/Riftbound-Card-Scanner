@@ -88,6 +88,7 @@ test('only an accepted camera result rings; unclear scans and manual bookkeeping
   const result={cardData:{id:'rad-001',name:'Radiance card',set:'RAD'},matched:true,similarity:0.99,similarityGap:0.1,quality:{acceptable:true,score:0.8}};
   assert.equal(detected({...result,matched:false}),false);assert.equal(rings,0);
   assert.equal(detected({...result,quality:{acceptable:false}}),false);assert.equal(rings,0);
+  assert.equal(detected({...result,acceptedByFakeScan:true}),false);assert.equal(rings,0);assert.equal(scan().pendingCards.length,0);
   assert.equal(detected(result),true);assert.equal(rings,1);assert.equal(scan().pendingCards.length,1);
   scan().onAddPendingCard({id:'manual',name:'Manual card',set:'RAD'});
   const pending=scan().pendingCards[0];scan().onConfirmPending(pending.entryId);
@@ -98,7 +99,7 @@ test('settings controls expose enable, volume and an explicit preview', () => {
   const runtime=createRuntime();const edits=[];let previews=0;
   const view=runtime.mount(runtime.load('src/components/settings/SettingsTab.jsx').default);
   const tree=view.render({batchDefaults:{},scanSoundSettings:{enabled:true,volume:0.35},onUpdateScanSound:(patch) => edits.push(patch),onTestScanSound:() => previews++});
-  nodes(tree,(node) => node.props?.role==='switch')[0].props.onClick();
+  nodes(tree,(node) => node.props?.['aria-label']==='Scan success sound')[0].props.onClick();
   nodes(tree,(node) => node.props?.id==='scan-sound-volume')[0].props.onChange({target:{value:'65'}});
   button(tree,'Play test sound').onClick();
   assert.equal(edits[0].enabled,false);assert.equal(edits[1].volume,0.65);assert.equal(previews,1);

@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { ScanDebugQueue } from './lib/scanDebugQueue.js';
 import { listen } from '@tauri-apps/api/event';
 import AppShell from './components/AppShell.jsx';
 import BottomTabBar from './components/BottomTabBar.jsx';
 import ToastNotification from './components/ToastNotification.jsx';
 import LoadingScreen from './components/LoadingScreen.jsx';
+import ManualScanReview from './components/scanner/ManualScanReview.jsx';
 import ScanTab from './components/scan/ScanTab.jsx';
 import ScanAddAnimation from './components/scan/ScanAddAnimation.jsx';
 import CollectionTab from './components/collection/CollectionTab.jsx';
@@ -27,6 +29,14 @@ import { isReliableScanResult } from './lib/scanQuality.js';
 import { createCardEntry, createEntryId, restoreCardEntries, getCardVariantKey, mergeCardEntries, matchesPendingScan } from './lib/collection.js';
 import { persistUserSnapshot } from './lib/userStorage.js';
 import { SCAN_SOUND_STORAGE_KEY } from './lib/scanSound.js';
+import { CardRectifier } from './lib/cardRectifier.js';
+import { CardTextReader } from './lib/cardTextReader.js';
+import { CardTextVerification } from './lib/cardTextVerification.js';
+import { SCANNER_DEBUG_KEY, SCANNER_OVERLAY_KEY, SCANNER_DIAGNOSTICS_AVAILABLE, normalizeScannerExperiments } from './lib/scannerExperiments.js';
+import { AUTOMATIC_ARTWORK_MINIMUM } from './lib/scanAcceptance.js';
+import { saveAcceptedDebugScan } from './lib/debugScanCapture.js';
+import { useScanSessionRecording } from './hooks/useScanSessionRecording.js';
+import { emitScanDiagnostic } from './lib/scanDiagnostics.js';
 
 // ─── State persistence helpers ──────────────────────────────
 const STORAGE_KEYS = {
@@ -112,8 +122,13 @@ export default function App() {
   const [notification, setNotification] = useState(null);
   const [scanAddAnimation, setScanAddAnimation] = useState(null);
 
-  // Scan settings
-  const [minConfidence, setMinConfidence] = useState(0.90);
+  const [debugEnabled, setDebugEnabled] = useState(() => SCANNER_DIAGNOSTICS_AVAILABLE && loadFromStorage(SCANNER_DEBUG_KEY, false) === true);
+  const [scanOverlayEnabled, setScanOverlayEnabled] = useState(() => loadFromStorage(SCANNER_OVERLAY_KEY, true) === true);
+  const [debugCapture, setDebugCapture] = useState({ status: 'idle' });
+  const lastDebugAcceptedRef = useRef(null);
+  const debugSaveQueueRef = useRef(null);
+  if (SCANNER_DIAGNOSTICS_AVAILABLE && !debugSaveQueueRef.current) debugSaveQueueRef.current = new ScanDebugQueue(pendingCount => setDebugCapture(previous => ({ ...previous, pendingCount })));
+  const [scanCameraVisible, setScanCameraVisible] = useState(true);
 
   // Batch defaults
   const [batchDefaults, setBatchDefaults] = useState(() =>
@@ -164,8 +179,40 @@ export default function App() {
   const cameraProfile = normalizeCameraProfile(cameraProfiles?.[cameraProfileKey]);
 
   // ─── Hooks ─────────────────────────────────────────────────
+  // Recognition features start enabled, including profiles saved with the old
+  // opt-in defaults. Debug overrides last only until debug closes or app exits.
+  const [scannerExperiments, setScannerExperiments] = useState(() => normalizeScannerExperiments(null));
+  const rectifierRef = useRef(null);
+  const refineCardCrop = useCallback((source, box) => {
+    if (!rectifierRef.current) rectifierRef.current = new CardRectifier();
+    return rectifierRef.current.refine(source, box);
+  }, []);
+  useEffect(() => { if(SCANNER_DIAGNOSTICS_AVAILABLE)saveToStorage(SCANNER_DEBUG_KEY, debugEnabled); }, [debugEnabled]);
+  useEffect(() => { saveToStorage(SCANNER_OVERLAY_KEY, scanOverlayEnabled); }, [scanOverlayEnabled]);
+  useEffect(() => {
+    if (!scannerExperiments.perspective) { rectifierRef.current?.dispose(); rectifierRef.current = null; }
+    return () => { rectifierRef.current?.dispose(); rectifierRef.current = null; };
+  }, [scannerExperiments.perspective]);
+
+  const textVerifierRef = useRef(null);
+  const textReaderRef = useRef(null);
+  if (scannerExperiments.textVerification && !textVerifierRef.current) {
+    if (!textReaderRef.current) textReaderRef.current = new CardTextReader();
+    textVerifierRef.current = new CardTextVerification(textReaderRef.current);
+  }
+  const textVerifier = scannerExperiments.textVerification ? textVerifierRef.current : null;
+  useEffect(() => {
+    if (!scannerExperiments.textVerification) { textVerifierRef.current?.dispose(); textVerifierRef.current = null; }
+    if (!scannerExperiments.textVerification) return undefined;
+    const owned = textVerifier;
+    // Loading belongs to the feature lifecycle, not to the first held card.
+    owned?.reader.ensureReady?.().catch(() => {});
+    return () => { owned?.dispose(); if (textVerifierRef.current === owned) textVerifierRef.current = null; };
+  }, [scannerExperiments.textVerification, textVerifier]);
+
   const camera = useCamera({ deviceId: cameraDeviceId, profile: cameraProfile });
-  const detection = useCardDetection({ scanSetFilter, minSimilarity: minConfidence });
+  const detection = useCardDetection({ scanSetFilter, cropRefiner: scannerExperiments.perspective ? refineCardCrop : null, textVerifier,
+    recognitionContext: `${cameraDeviceId}:${cameraProfile}:${camera.facingMode}:${activeTab}:${modelPreference}`, cameraIsActive: camera.isActive });
   const scanSound = useScanSound();
   const cardDatabaseInputRef = useRef(null);
 
@@ -175,6 +222,10 @@ export default function App() {
   const priceExchangeRateFallback = priceSyncMeta ? Boolean(priceSyncMeta.exchangeRateFallback ?? priceSyncMeta.usdPerEurRateFallback) : true;
   const yieldToPaint = useCallback(() => new Promise((resolve) => requestAnimationFrame(() => resolve())), []);
   const matcher = getMatcher();
+  const scanRecording = SCANNER_DIAGNOSTICS_AVAILABLE ? useScanSessionRecording({videoRef:camera.videoRef,
+    active:debugEnabled && camera.isActive && activeTab === 'scan' && scanCameraVisible,
+    contextKey:JSON.stringify([activeTab,scanCameraVisible,scanSetFilter,scannerExperiments,cameraDeviceId,cameraProfile,camera.facingMode,modelPreference,matcher.revision]),
+    metadata:{...scannerExperiments,detectorModel:modelPreference,cameraProfile,setFilter:scanSetFilter,cameraSettings:camera.settings}}) : null;
   const cardDatabaseSourceLabel = detection.detectorState === 'ready'
     ? (matcher.databaseSource === 'local' ? 'Imported locally' : 'Bundled file')
     : 'Unknown';
@@ -196,6 +247,8 @@ export default function App() {
     [STORAGE_KEYS.CAMERA_DEVICE_ID]: cameraDeviceId,
     [STORAGE_KEYS.CAMERA_PROFILES]: cameraProfiles,
     [SCAN_SOUND_STORAGE_KEY]: scanSound.settings,
+    [SCANNER_DEBUG_KEY]: debugEnabled,
+    [SCANNER_OVERLAY_KEY]: scanOverlayEnabled,
   };
 
   useEffect(() => {
@@ -792,11 +845,8 @@ export default function App() {
   // ─── Refs for use in callbacks without stale closures ──
   const batchDefaultsRef = useRef(batchDefaults);
   useEffect(() => { batchDefaultsRef.current = batchDefaults; }, [batchDefaults]);
-  const minConfidenceRef = useRef(minConfidence);
-  useEffect(() => { minConfidenceRef.current = minConfidence; }, [minConfidence]);
-
   const passesScanThreshold = useCallback((result) => {
-    return isReliableScanResult(result, minConfidenceRef.current);
+    return isReliableScanResult(result, AUTOMATIC_ARTWORK_MINIMUM);
   }, []);
 
   const recordRecentPendingScan = useCallback((entry, timestamp) => {
@@ -824,6 +874,7 @@ export default function App() {
   }, [priceByCardId, recordRecentPendingScan, showNotification]);
 
   const handleCardDetected = useCallback((result) => {
+    if (result?.acceptedByFakeScan) return false;
     if (!result?.cardData?.id || !passesScanThreshold(result)) return false;
     queuePendingEntry(createCardEntry({
       cardData: result.cardData,
@@ -832,6 +883,7 @@ export default function App() {
       scanTimestamp: result.timestamp,
     }, batchDefaultsRef.current));
     scanSound.playScanAccepted();
+    emitScanDiagnostic('queued',{result});
     return true;
   }, [passesScanThreshold, queuePendingEntry, scanSound.playScanAccepted]);
 
@@ -846,23 +898,76 @@ export default function App() {
     }, batchDefaultsRef.current));
   }, [queuePendingEntry]);
 
+  const captureAcceptedDebugScan = useCallback(result => {
+    if(!SCANNER_DIAGNOSTICS_AVAILABLE)return;
+    const queue = debugSaveQueueRef.current;
+    if (queue.jobs.has(result.frameId)) return queue.jobs.get(result.frameId).promise;
+    lastDebugAcceptedRef.current = result;
+    setDebugCapture({ status: 'saving', card: result.cardData, frameId: result.frameId, pendingCount: queue.size + 1 });
+    return queue.enqueue(result.frameId, async () => {
+      emitScanDiagnostic('accepted-capture-start',{frameId:result.frameId});
+      try {
+        const saved = await saveAcceptedDebugScan(result, { ...scannerExperiments, detectorMode: detection.detectorMode, cameraProfile,
+          setFilter: scanSetFilter, cameraSettings: camera.settings });
+        if (lastDebugAcceptedRef.current === result) setDebugCapture({ status: 'saved', card: result.cardData, frameId: result.frameId, ...saved });
+        emitScanDiagnostic('accepted-capture-saved',{frameId:result.frameId});
+      } catch (error) {
+        if (lastDebugAcceptedRef.current === result) setDebugCapture({ status: 'error', card: result.cardData, frameId: result.frameId, error: String(error?.message || error) });
+        emitScanDiagnostic('accepted-capture-error',{frameId:result.frameId,error:String(error?.message || error)});
+      }
+    });
+  }, [scannerExperiments, detection.detectorMode, cameraProfile, scanSetFilter, camera.settings]);
+
+  const handleDebugChange = useCallback(value => {
+    if(!SCANNER_DIAGNOSTICS_AVAILABLE)return;
+    setDebugEnabled(value);
+    if (!value) setScannerExperiments(normalizeScannerExperiments(null));
+  }, []);
+
   const autoScan = useAutoScan({
-    cameraIsActive: camera.isActive && activeTab === 'scan',
-    isProcessing: detection.isProcessing,
+    cameraIsActive: camera.isActive && activeTab === 'scan' && scanCameraVisible,
+    isProcessing: detection.isProcessing || (debugEnabled && debugCapture.pendingCount >= 3),
     detectSingleFrame: detection.detectSingleFrame,
     captureFrame: camera.captureFrame,
     onCardDetected: handleCardDetected,
+    validateResult: passesScanThreshold,
+    resetRecognition: detection.resetRecognition,
+    debugEnabled,
+    onDebugAccepted: captureAcceptedDebugScan,
+    recognitionContext: JSON.stringify([activeTab, scanCameraVisible, scanSetFilter, debugEnabled, scannerExperiments,
+      cameraDeviceId, cameraProfile, camera.facingMode, modelPreference, matcher.revision]),
   });
 
+  const snapBusyRef = useRef(false);
+  const [manualScanReview, setManualScanReview] = useState(null);
+  useEffect(() => { setManualScanReview(null); }, [activeTab, camera.isActive, scanSetFilter, autoScan.autoScanEnabled, autoScan.fakeScanEnabled]);
+  const autoEnabledRef = useRef(autoScan.autoScanEnabled || autoScan.fakeScanEnabled);
+  autoEnabledRef.current = autoScan.autoScanEnabled || autoScan.fakeScanEnabled;
+
   const handleSnapScan = useCallback(async () => {
-    if (!camera.isActive || detection.isProcessing) return;
-    const result = await detection.detectSingleFrame(camera.captureFrame);
-    if (result?.matched && handleCardDetected(result)) {
-      autoScan.setLastCardId(result.cardData.id);
-    } else {
-      showNotification('No card accepted — try again or adjust scan sensitivity', 'info');
-    }
-  }, [camera.isActive, camera.captureFrame, detection, handleCardDetected, showNotification, autoScan]);
+    if (!camera.isActive || detection.isProcessing || snapBusyRef.current || autoEnabledRef.current || manualScanReview) return;
+    snapBusyRef.current = true;
+    try {
+      textVerifier?.reset();
+      let result;
+      const deadline = Date.now() + 2000;
+      do {
+        result = await detection.detectSingleFrame(camera.captureFrame, { includeCandidate: true, includeReview: true });
+        if (passesScanThreshold(result) || !textVerifier ||
+          (result && result.textVerification?.status !== 'pending')) break;
+        if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 125));
+      } while (Date.now() < deadline);
+
+      if (autoEnabledRef.current) return;
+      if (result?.matched && handleCardDetected(result)) {
+        autoScan.setLastCardId(result.cardData.id);
+      } else if (result?.quality?.acceptable && result.reviewCandidates?.length) {
+        setManualScanReview(result);
+      } else {
+        showNotification('No card accepted — hold the card steady or review it manually', 'info');
+      }
+    } finally { snapBusyRef.current = false; }
+  }, [camera.isActive, camera.captureFrame, detection, handleCardDetected, showNotification, autoScan, textVerifier, manualScanReview]);
 
   const handleUpdatePendingCard = useCallback((entryId, patch) => {
     setPendingCards((prev) => prev.map((entry) => entry.entryId === entryId
@@ -1005,12 +1110,19 @@ export default function App() {
   return (
     <AppShell>
       {cardDatabaseInput}
+      {manualScanReview && <ManualScanReview result={manualScanReview} onClose={() => setManualScanReview(null)} onSelect={(card) => {
+        queuePendingEntry(createCardEntry({ cardData: card, similarity: card.similarity,
+          confidence: manualScanReview.confidence, manualAdded: true, scanTimestamp: Date.now() }, batchDefaultsRef.current));
+        autoScan.setLastCardId(card.id);
+        setManualScanReview(null);
+      }} />}
 
       {/* Tab content */}
       <div className="flex-1 flex flex-col min-h-0">
         {activeTab === 'scan' && (
           <ScanTab
             camera={camera}
+            onCameraViewChange={setScanCameraVisible}
             detection={detection}
             onSnapScan={handleSnapScan}
             pendingCards={pendingCards}
@@ -1025,9 +1137,19 @@ export default function App() {
             onAddCardsToExport={handleAddCardsToExport}
             showNotification={showNotification}
             batchDefaults={batchDefaults}
-            minConfidence={minConfidence}
+            scannerExperiments={scannerExperiments}
+            onUpdateScannerExperiments={(patch) => setScannerExperiments(previous => normalizeScannerExperiments({ ...previous, ...patch }))}
+            textVerifier={textVerifier}
+            cropRefiner={scannerExperiments.perspective ? refineCardCrop : null}
             autoScanEnabled={autoScan.autoScanEnabled}
             onToggleAutoScan={autoScan.toggleAutoScan}
+            debugEnabled={debugEnabled}
+            onDebugChange={handleDebugChange}
+            scanOverlayEnabled={scanOverlayEnabled}
+            onScanOverlayChange={setScanOverlayEnabled}
+            debugCapture={debugCapture}
+            scanRecording={scanRecording}
+            onRetryDebugCapture={() => { if (lastDebugAcceptedRef.current) captureAcceptedDebugScan(lastDebugAcceptedRef.current); }}
             exportFormat={exportFormat}
             scanSetFilter={scanSetFilter}
             scanSetOptions={scanSetOptions}
@@ -1057,8 +1179,6 @@ export default function App() {
           <SettingsTab
             batchDefaults={batchDefaults}
             onUpdateDefaults={setBatchDefaults}
-            minConfidence={minConfidence}
-            onUpdateMinConfidence={setMinConfidence}
             scanSoundSettings={scanSound.settings}
             onUpdateScanSound={scanSound.updateSettings}
             onTestScanSound={async () => {

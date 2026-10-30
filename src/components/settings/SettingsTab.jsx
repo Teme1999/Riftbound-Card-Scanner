@@ -4,6 +4,7 @@ import { CONDITIONS, LANGUAGES } from '../../data/sampleCards.js';
 import { EXPORT_FORMAT_OPTIONS } from '../../lib/csvExporter.js';
 import { CAMERA_PROFILES } from '../../lib/cameraControls.js';
 import { DEFAULT_SCAN_SOUND, normalizeScanSound } from '../../lib/scanSound.js';
+import { SCANNER_DIAGNOSTICS_AVAILABLE } from '../../lib/scannerExperiments.js';
 import { openDesktopUrl } from '../../lib/desktopBridge.js';
 import { FALLBACK_EXCHANGE_RATE_DATE, FALLBACK_ECB_EUR_RATES, PRICE_CURRENCY_OPTIONS, normalizeExchangeRates, normalizePriceCurrency } from '../../lib/priceFormat.js';
 
@@ -12,8 +13,6 @@ const APP_VERSION_LABEL = __APP_RELEASE_VERSION__ || __APP_VERSION__;
 export default function SettingsTab({
   batchDefaults,
   onUpdateDefaults,
-  minConfidence,
-  onUpdateMinConfidence,
   scanSoundSettings = DEFAULT_SCAN_SOUND,
   onUpdateScanSound,
   onTestScanSound,
@@ -136,7 +135,7 @@ export default function SettingsTab({
               3. Review everything in <span className="text-rift-100 font-medium">Collection</span>, where you can search, edit, and export your cards.
             </p>
             <p>
-              4. Use this page to choose your camera, tune scan sensitivity, set defaults, and refresh card or price data.
+              4. Use this page to choose your camera, set defaults, and refresh card or price data.
             </p>
           </div>
         </section>
@@ -260,37 +259,10 @@ export default function SettingsTab({
           </button>
         </section>
 
-        <section className="rounded-2xl bg-rift-800/60 border border-rift-600/20 p-5 space-y-4">
-          <h2 className="text-sm font-semibold text-rift-100 flex items-center gap-2">
-            <Search className="w-4 h-4 text-gold-400" />
-            Scan Sensitivity
-          </h2>
-          <p className="text-xs text-rift-400 leading-relaxed">
-            Controls how strict the scanner is before a detected card is accepted into the pending list.
-          </p>
-
-          <div className="rounded-xl border border-rift-600/20 bg-rift-900/40 px-3 py-3 space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-[11px] font-medium uppercase tracking-wider text-rift-400">
-                Minimum similarity
-              </span>
-              <span className="text-xs font-mono text-gold-400">
-                {Math.round(minConfidence * 100)}%
-              </span>
-            </div>
-            <input
-              type="range"
-              min="50"
-              max="100"
-              value={Math.round(minConfidence * 100)}
-              onChange={(e) => onUpdateMinConfidence(Number(e.target.value) / 100)}
-              className="range-slider"
-            />
-            <div className="flex items-center justify-between text-[10px] text-rift-500">
-              <span>More cards</span>
-              <span>Fewer false positives</span>
-            </div>
-          </div>
+        <section className="rounded-2xl bg-rift-800/60 border border-rift-600/20 p-5 space-y-3">
+          <h2 className="text-sm font-semibold text-rift-100">Scanning tips</h2>
+          <p className="text-xs text-rift-400 leading-relaxed">Keep one card inside the frame, hold it steady and leave its name and collector code visible. Tilt reflective cards slightly to reduce glare.</p>
+          <p className="text-xs text-rift-400">Uncertain scans can be reviewed before adding them. To add another copy of the same card, change its quantity in the pending list.</p>
         </section>
 
         <section className="rounded-2xl bg-rift-800/60 border border-rift-600/20 p-5 space-y-4">
@@ -491,29 +463,25 @@ export default function SettingsTab({
         <section className="rounded-2xl bg-rift-800/60 border border-rift-600/20 p-5 space-y-4">
           <h2 className="text-sm font-semibold text-rift-100 flex items-center gap-2">
             <Cpu className="w-4 h-4 text-gold-400" />
-            Card & Detector
+            Card database
           </h2>
           <p className="text-xs text-rift-400">
-            Use this section when you import a new card database or switch the startup model export. Quantized is the recommended default.
+            Add newly released cards and retry any incomplete downloads.
           </p>
 
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className={`grid gap-4 ${SCANNER_DIAGNOSTICS_AVAILABLE ? 'lg:grid-cols-2' : ''}`}>
             <div className="rounded-xl border border-rift-600/20 bg-rift-900/40 p-4 space-y-3">
               <div className="flex items-center gap-2 text-sm font-semibold text-rift-100">
                 <Database className="w-4 h-4 text-gold-400" />
-                Matcher database
+                Installed cards
               </div>
               <p className="text-[11px] text-rift-400 leading-relaxed">
-                Press <span className="text-rift-200 font-medium">Update Card Database</span> to scrape Riot's card gallery, regenerate <span className="text-gold-300">card-hashes.json</span>, and refresh the matcher. For a new DLC drop, this is usually the only step you need.
+                Check Riot's card gallery for missing cards, including later additions to sets you already have. New cards become available for scanning after the update.
               </p>
-
-              <div className="rounded-xl border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200/90 leading-relaxed">
-                Detector retraining is handled by the local model scripts outside the app. After publishing new generated assets, reload the app so it picks up the updated files.
-              </div>
 
               <div
                 className="rounded-xl border border-rift-600/20 bg-rift-950/40 px-3 py-2 text-xs text-rift-400"
-                title="This tells you which matcher database the app is currently using. If it says Bundled file, the app is still using the built-in database. If it says Imported locally, your local card-hashes.json is active."
+                title="The app uses its bundled cards and any card updates saved on this device."
               >
                 Current source: <span className="text-rift-200">{cardDatabaseLabel}</span>
               </div>
@@ -540,7 +508,7 @@ export default function SettingsTab({
               </button>
             </div>
 
-            <div className="rounded-xl border border-rift-600/20 bg-rift-900/40 p-4 space-y-3">
+            {SCANNER_DIAGNOSTICS_AVAILABLE && <div className="rounded-xl border border-rift-600/20 bg-rift-900/40 p-4 space-y-3">
               <div className="flex items-center gap-2 text-sm font-semibold text-rift-100">
                 <Cpu className="w-4 h-4 text-gold-400" />
                 Detector model
@@ -613,7 +581,7 @@ export default function SettingsTab({
               >
                 Reload app after building
               </button>
-            </div>
+            </div>}
           </div>
         </section>
 

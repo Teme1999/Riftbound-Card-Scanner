@@ -29,12 +29,15 @@ test('a persistence or download failure prevents installation', async () => {
   assert.throws(() => persistUserSnapshot({collection:[1]}, {setItem(){throw new Error('Quota');}}), /Quota/);
 });
 
-test('collection changes during an update download are flushed before the installer exits', async () => {
+test('collection and overlay/debug changes during download are flushed before the installer exits', async () => {
   let completeDownload, installed = false;
   const runtime = createRuntime({ globals:{__TAURI_INTERNALS__:{}}, mocks:{'@tauri-apps/plugin-process':{relaunch:async () => {}}, '@tauri-apps/plugin-updater':{
     check:async () => ({version:'26.10.2601',download:() => new Promise((resolve) => {completeDownload=resolve;}),install:async () => {
       const saved = JSON.parse(runtime.values.get('riftbound_pending_cards'));
-      assert.equal(saved[0].quantity,3); installed = true;
+      assert.equal(saved[0].quantity,3);
+      assert.equal(JSON.parse(runtime.values.get('riftbound_scanner_debug_overlay_enabled')),true);
+      assert.equal(JSON.parse(runtime.values.get('riftbound_scanner_overlay_enabled')),false);
+      installed = true;
     }}),
   }} });
   const app = runtime.mount(runtime.load('src/App.jsx').default,[false]);
@@ -42,6 +45,8 @@ test('collection changes during an update download are flushed before the instal
   await componentProps(app.render(),'SettingsTab').onCheckAppUpdate();
   const install = componentProps(app.render(),'SettingsTab').onInstallAppUpdate();
   componentProps(app.render(),'BottomTabBar').onTabChange('scan');
+  componentProps(app.render(),'ScanTab').onDebugChange(true);
+  componentProps(app.render(),'ScanTab').onScanOverlayChange(false);
   componentProps(app.render(),'ScanTab').onAddPendingCard({id:'rad-001',name:'New scan',set:'RAD'}, {quantity:3});
   app.render(); completeDownload(); await install;
   assert.equal(installed,true);

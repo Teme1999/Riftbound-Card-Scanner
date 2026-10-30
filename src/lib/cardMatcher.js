@@ -7,6 +7,8 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { loadMatcherDatabase, saveMatcherDatabase } from './indexedDB.js';
 import { isDesktopRuntime, resolveAppUrl } from './runtime.js';
 import { describeFeatures, compareFeatures } from './cardSimilarity.js';
+import { areaColorGrid } from './cardFeatures.js';
+import { describeLocalArtwork, compareLocalArtwork, compareAlignedArtwork, artworkDetailScore } from './localArtwork.js';
 
 const HASHES_URL = resolveAppUrl(`/card-hashes.json?v=${__BUILD_TIME__}`);
 const isDevelopment = import.meta.env.DEV;
@@ -178,11 +180,13 @@ class CardMatcher {
   }
 
   _applyDatabase(database) {
+    this.revision = (this.revision || 0) + 1;
     this._tmpCanvas = null;
     this.gridSize = database.gridSize;
     this.cards = (database.cards || []).map((card) => {
       const f = card.f instanceof Float32Array ? card.f : new Float32Array(card.f);
-      return { ...card, f, featureStats: describeFeatures(f) };
+      return { ...card, f, featureStats: describeFeatures(f), localArtwork: describeLocalArtwork(f, this.gridSize),
+        broadArtwork: describeLocalArtwork(f,this.gridSize,{radius:Math.max(1,Math.round(this.gridSize/4))}) };
     });
     this.databaseSetCoverage = summarizeMatcherSets(this.cards);
     this.ready = true;
@@ -209,27 +213,53 @@ class CardMatcher {
    */
   identify(cropCanvas, options = {}) {
     const ranked = this.rank(cropCanvas, { ...options, limit: 2 });
-    return ranked.length ? { ...ranked[0], secondBestSim: ranked[1]?.similarity ?? 0 } : null;
+    return ranked.length ? { ...ranked[0], secondBestSim: ranked[0].secondBestSim ?? ranked[1]?.similarity ?? 0 } : null;
   }
 
-  rank(cropCanvas, options = {}) {
+  rank(cropCanvas, { areaSampling = false, ...options } = {}) {
     if (!this.ready || !this.cards.length) return [];
-    return this.rankFeatures(this._computeColorGrid(this._cropArtwork(cropCanvas)), options);
+    return this.rankFeatures(this._computeColorGrid(this._cropArtwork(cropCanvas), { areaSampling }), options);
   }
 
-  rankFeatures(features, { setFilter, limit = 3 } = {}) {
+  rankFeatures(features, { setFilter, limit = 3, localStructure = false, alignLocal = true, requiredIds = null } = {}) {
     if (!this.ready) return [];
     const featureStats = describeFeatures(features);
     if (!featureStats || featureStats.structureNorm < 1e-8) return [];
-    const ranked = [];
+    let ranked = [];
+    const required = requiredIds && new Set(requiredIds), requested = [];
+    const local = localStructure ? describeLocalArtwork(features, this.gridSize) : null;
+    const broad = local ? describeLocalArtwork(features,this.gridSize,{radius:Math.max(1,Math.round(this.gridSize/4))}) : null;
+    const broadRanked=[],poolLimit=Math.max(32,limit);
+    const insert=(list,entry,score,maximum)=>{
+      const index=list.findIndex(candidate=>score(candidate)<score(entry));
+      if(index>=0)list.splice(index,0,entry);else if(list.length<maximum)list.push(entry);
+      if(list.length>maximum)list.length=maximum;
+    };
+    let bestLegacy = null, secondLegacy = 0;
     for (const card of filterCardsBySet(this.cards, setFilter)) {
       if (!card.featureStats || card.f.length !== features.length) continue;
       const scores = compareFeatures(features, card.f, featureStats, card.featureStats);
       const entry = { card, ...scores };
-      const index = ranked.findIndex((candidate) => candidate.similarity < entry.similarity);
-      if (index >= 0) ranked.splice(index, 0, entry);
-      else if (ranked.length < limit) ranked.push(entry);
-      if (ranked.length > limit) ranked.length = limit;
+      if (required?.has(card.id)) requested.push(entry);
+      if (local) {
+        entry.localStructureSimilarity = compareLocalArtwork(local, card.localArtwork);
+        entry.broadStructureSimilarity = compareLocalArtwork(broad,card.broadArtwork);
+      }
+      if (!bestLegacy || scores.similarity > bestLegacy.similarity) { secondLegacy = bestLegacy?.similarity ?? 0; bestLegacy = entry; }
+      else secondLegacy = Math.max(secondLegacy, scores.similarity);
+      insert(ranked,entry,candidate=>local?candidate.localStructureSimilarity:candidate.similarity,local?poolLimit:limit);
+      if(local)insert(broadRanked,entry,candidate=>candidate.broadStructureSimilarity,poolLimit);
+    }
+    if (required) return requested.map(entry => ({ ...entry, secondBestSim: entry.card.id === bestLegacy?.card.id ? secondLegacy : bestLegacy?.similarity || 0 }));
+    if (local) {
+      ranked=[...new Set([...ranked,...broadRanked])];
+      for(const entry of ranked){
+        const alignment=alignLocal ? compareAlignedArtwork(local,entry.card.localArtwork,broad,entry.card.broadArtwork,this.gridSize) : null;
+        if(alignment){entry.alignedArtworkSimilarity=alignment.similarity;entry.artworkAlignment={dx:alignment.dx,dy:alignment.dy,overlap:alignment.overlap};}
+        entry.secondBestSim=entry.card.id===bestLegacy.card.id?secondLegacy:bestLegacy.similarity;
+      }
+      const rankScore = entry => alignLocal ? artworkDetailScore(entry) : Math.max(entry.localStructureSimilarity, entry.broadStructureSimilarity);
+      ranked.sort((a,b)=>rankScore(b)-rankScore(a));ranked.length=Math.min(limit,ranked.length);
     }
     return ranked;
   }
@@ -268,7 +298,7 @@ class CardMatcher {
     }
   }
 
-  _computeColorGrid(canvas) {
+  _computeColorGrid(canvas, { areaSampling = false } = {}) {
     const w = canvas.width, h = canvas.height;
     if (!this._eqCanvas) this._eqCanvas = document.createElement('canvas');
     this._eqCanvas.width = w;
@@ -277,6 +307,7 @@ class CardMatcher {
     eqCtx.drawImage(canvas, 0, 0);
     const fullData = eqCtx.getImageData(0, 0, w, h);
     this._equalizeHistogram(fullData.data);
+    if (areaSampling) return areaColorGrid(fullData, this.gridSize);
     eqCtx.putImageData(fullData, 0, 0);
 
     if (!this._tmpCanvas) {

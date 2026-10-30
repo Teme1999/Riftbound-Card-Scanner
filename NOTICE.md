@@ -47,6 +47,27 @@ Generated card images, card metadata, artwork fingerprints, and detector models
 are produced by the local scripts in `model/`. They are intentionally ignored in
 git and must be regenerated or restored before production builds.
 
+## Optional OCR Runtime
+
+The optional card-text verifier bundles Tesseract.js 7.0.0 and its Tesseract.js-core
+7.0.0 WebAssembly runtime (Apache-2.0), plus the English integerized language data
+distributed in `@tesseract.js-data/eng` 1.0.0 (package license: MIT). Runtime license
+files and worker dependency notices are copied into `ocr/` in the frontend bundle.
+Upstream projects: https://github.com/naptha/tesseract.js and
+https://github.com/naptha/tessdata. All OCR processing and language/model loading
+use bundled local files.
+
+## Visual Geometry Runtime
+
+The artwork geometry verifier bundles OpenCV 4.12.0 JavaScript/WebAssembly from
+`@techstark/opencv-js` 4.12.0-release.1 (Apache-2.0). The package distributes the
+upstream OpenCV.js build from https://docs.opencv.org/4.12.0/opencv.js.
+Its license is copied to `visual/licenses/opencv-js/` in the frontend bundle.
+All reference images and runtime code are loaded locally.
+The build applies `scripts/opencv-csp.mjs` to replace four generated JavaScript
+binding factories with static closures. This modification leaves the upstream
+WASM unchanged and permits operation without enabling JavaScript `unsafe-eval`.
+
 ## Price Data
 
 The optional price cache imports `cards.csv` from the community-maintained

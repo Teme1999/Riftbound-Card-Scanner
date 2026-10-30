@@ -38,11 +38,16 @@ test('release packaging uses GitHub-safe names and validates exact signed sideca
   await fs.mkdir(directory,{recursive:true});
   await fs.writeFile(path.join(root,'package.json'),JSON.stringify({version,releaseVersion}));
   await fs.writeFile(path.join(root,'src-tauri/tauri.conf.json'),JSON.stringify({version,plugins:{updater:{pubkey:signingData()}}}));
-  const name = 'Riftbound Scanner_raw.msi';
+  const name = `Riftbound Scanner_${version}_x64_en-US.msi`;
+  const previous = 'Riftbound Scanner_26.10.2501_x64_en-US.msi';
+  await fs.writeFile(path.join(directory,previous),'previous signed installer');
+  await fs.writeFile(path.join(directory,`${previous}.sig`),signingData(1,true));
   await fs.writeFile(path.join(directory,name),'test installer bytes');
+  await assert.rejects(prepareUpdateRelease({root,output,repository:'owner/repo',tag:`v${releaseVersion}`}),/No signed MSI updater artifact for version/);
   await fs.writeFile(path.join(directory,`${name}.sig`),signingData(1,true));
   await prepareUpdateRelease({root,output,repository:'owner/repo',tag:`v${releaseVersion}`});
   const feed=JSON.parse(await fs.readFile(path.join(output,'latest.json'),'utf8'));
+  assert.equal(await fs.readFile(path.join(output,'RiftboundScanner_2026.10.26.1_x64_en-US.msi'),'utf8'),'test installer bytes');
   assert.ok(feed.platforms['windows-x86_64'].url.endsWith('RiftboundScanner_2026.10.26.1_x64_en-US.msi'));
   await validateUpdateFeed(feed,{directory:output,version,publicKey:signingData()});
   const broken=structuredClone(feed); broken.platforms['windows-x86_64'].url=broken.platforms['windows-x86_64'].url.replace('RiftboundScanner','Riftbound%20Scanner');

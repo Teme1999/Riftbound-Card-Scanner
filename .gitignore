@@ -27,6 +27,11 @@ public/cards/
 public/card-hashes.json
 public/models/
 release-assets/*.msi
+*.msi
+*.msi.sig
+*.msi.zip
+*.msi.zip.sig
+/release-assets/latest.json
 
 # Tauri updater signing keys
 riftbound-scanner-updater.key
@@ -34,6 +39,27 @@ riftbound-scanner-updater.key.pub
 riftbound-scanner-updater.key.password.txt
 *.tauri.key
 *.tauri.key.pub
+*.key
+*.pem
+*.pfx
+*.p12
+.env
+.env.*
+!.env.example
+
+# Private scanner captures and local diagnostic output
+/tests/local/
+debug-scans/
+debug-recordings/
+native-frames/
+*.webm
+*.mp4
+*.mov
+*.mkv
+riftbound-debug-scan-*
+riftbound-scan-session-*
+riftbound-native-frame-*
+riftbound-frame-*
 
 # Tauri / Rust build output
 src-tauri/target/

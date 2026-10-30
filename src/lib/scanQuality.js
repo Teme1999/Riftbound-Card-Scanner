@@ -1,5 +1,13 @@
+import { assessScanAcceptance } from './scanAcceptance.js';
+
 export const MIN_SIMILARITY_GAP = 0.05;
 export const QUALITY_MESSAGES = {
+  'reading-text': 'Reading the card name and number. Hold it steady.',
+  'detector-unconfirmed': 'Keep the whole card visible and hold it steady.',
+  'text-conflict': 'Card text and artwork disagree. Check the card manually.',
+  'text-artwork-insufficient': 'Name and number read. Reduce glare or hold the card straighter.',
+  'text-too-small': 'Bring the card closer to read its number.',
+  'geometry-conflict': 'Card edges are unclear. Hold the card straight or review it manually.',
   'too-dark': 'Add more light to the card.',
   'too-bright': 'Reduce direct light or tilt the card slightly.',
   'too-small': 'Bring the card closer to the camera.',
@@ -79,8 +87,9 @@ export function frameDifference(left = [], right = []) {
 }
 
 export class BestFrameBuffer {
-  constructor() { this.clear(); }
+  constructor() { this.motionContext={epoch:0};this.clear(); }
   clear() {
+    this.motionContext.epoch++;
     for (const frame of this.frames || []) if (frame.canvas) frame.canvas.scanCancelled = true;
     this.frames = [];
     this.lastVideoTime = null;
@@ -90,6 +99,7 @@ export class BestFrameBuffer {
     const moving = previous && frameDifference(previous.quality.fingerprint, frame.quality.fingerprint) > 0.1;
     if (moving || (previous && previous.layoutKey !== frame.layoutKey)) this.clear();
     frame.moving = Boolean(moving);
+    if(frame.canvas){frame.canvas.scanMotionEpoch=this.motionContext.epoch;frame.canvas.scanMotionContext=this.motionContext;}
     this.frames.push(frame);
     this.frames = this.frames.filter((item) => frame.capturedAt - item.capturedAt <= 350).slice(-3);
   }
@@ -102,19 +112,22 @@ export class BestFrameBuffer {
   }
 }
 
+export function isScanFrameCancelled(frame) {
+  return Boolean(frame?.scanCancelled || (frame?.scanMotionContext && frame.scanMotionEpoch !== frame.scanMotionContext.epoch));
+}
+
 export function isReliableScanResult(result, minSimilarity = 0.68) {
-  return Boolean(result?.cardData?.id) && result.matched === true && result.quality?.acceptable === true &&
-    Number.isFinite(result.similarity) &&
-    Number.isFinite(result.similarityGap) && result.similarityGap >= MIN_SIMILARITY_GAP &&
-    result.similarity >= minSimilarity;
+  return result?.matched === true && assessScanAcceptance(result, { minSimilarity }).eligible;
 }
 
 export function getScanGuidance(captureQuality, lastDetection, now = Date.now()) {
   const recent = lastDetection && now - lastDetection.observedAt < 1200;
   let issue = captureQuality?.issue === 'moving' ? 'moving'
+    : recent && !lastDetection.matched && lastDetection.quality?.acceptable && lastDetection.textVerification?.status==='pending' ? 'reading-text'
     : recent ? lastDetection.reason || lastDetection.quality?.issue || 'ready'
     : captureQuality?.issue || 'ready';
   if (issue === 'outside-guide' && ['too-dark', 'too-bright'].includes(captureQuality?.issue)) issue = captureQuality.issue;
   if (issue === 'ambiguous' && lastDetection.quality?.reflectionRisk) issue = 'glare';
-  return { issue, message: QUALITY_MESSAGES[issue] || QUALITY_MESSAGES.ready };
+  return { issue, message: issue==='reading-text'&&lastDetection?.cardData?.type==='rune'
+    ? 'Reading the rune name and set. Hold it steady.' : QUALITY_MESSAGES[issue] || QUALITY_MESSAGES.ready };
 }

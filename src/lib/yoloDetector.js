@@ -80,7 +80,7 @@ class YOLODetector {
     this._warmupComplete = true;
   }
 
-  async detect(source) {
+  async detect(source, { allowProposals = false } = {}) {
     if (this.state !== DetectorState.READY || !this.onnxSession) {
       return [];
     }
@@ -95,8 +95,15 @@ class YOLODetector {
     // training distribution. Leave context, then retry at the original scale
     // only when the guide contains no detection. Matching still crops natively.
     const detections = await this._onnxDetect(source, width, height, 0.85);
-    return selectGuideDetection(detections, source.scanRegion.guide)
-      ? detections : this._onnxDetect(source, width, height);
+    if(selectGuideDetection(detections, source.scanRegion.guide))return detections;
+    const native=await this._onnxDetect(source,width,height);
+    if(selectGuideDetection(native,source.scanRegion.guide)||!allowProposals)return native;
+    // Borderless art may lack a confident detector box. Preserve its actual
+    // score and require independent visual/text verification downstream.
+    const proposals=this._nmsOBB([...(detections.proposals||[]),...(native.proposals||[])])
+      .filter(proposal=>selectGuideDetection([proposal],source.scanRegion.guide)).slice(0,3);
+    return proposals.map(proposal=>({...proposal,detectorProposal:true,
+      cropCanvas:this._cropRotated(source,width,height,proposal.box.cx,proposal.box.cy,proposal.box.w,proposal.box.h,proposal.box.angle)}));
   }
 
   async _onnxDetect(source, srcW, srcH, contextScale = 1) {
@@ -127,12 +134,12 @@ class YOLODetector {
     const output = results.output0 || results[Object.keys(results)[0]];
     const outputData = output.data;
 
-    const detections = [];
+    const detections = [],proposals=[];
     const numDetections = output.dims?.[2] || 8400;
 
     for (let i = 0; i < numDetections; i += 1) {
       const conf = outputData[4 * numDetections + i];
-      if (conf < this.confidenceThreshold) {
+      if (conf < Math.min(.25,this.confidenceThreshold)) {
         continue;
       }
 
@@ -142,6 +149,11 @@ class YOLODetector {
       const w = outputData[2 * numDetections + i] / scale;
       const h = outputData[3 * numDetections + i] / scale;
       const angle = outputData[5 * numDetections + i];
+      if(conf<this.confidenceThreshold){
+        const ratio=Math.min(w,h)/Math.max(w,h);
+        if(ratio>=.5&&ratio<=.94)proposals.push({box:{cx,cy,w,h,angle},confidence:conf});
+        continue;
+      }
       const cropCanvas = this._cropRotated(source, srcW, srcH, cx, cy, w, h, angle);
 
       detections.push({
@@ -151,7 +163,9 @@ class YOLODetector {
       });
     }
 
-    return this._nmsOBB(detections);
+    const primary=this._nmsOBB(detections);
+    Object.defineProperty(primary,'proposals',{value:this._nmsOBB(proposals)});
+    return primary;
   }
 
   _cropRotated(source, sourceWidth, sourceHeight, cx, cy, w, h, angle) {

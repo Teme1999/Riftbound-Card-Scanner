@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { openCameraStream, applyCameraAutoModes, supportsTorch } from '../lib/cameraControls.js';
 import { getVideoScanRegion } from '../lib/scanGeometry.js';
 import { BestFrameBuffer, readCanvasQuality } from '../lib/scanQuality.js';
+import { emitScanDiagnostic } from '../lib/scanDiagnostics.js';
 
 /**
  * Hook for managing camera access and video streaming
@@ -138,6 +139,8 @@ export function useCamera({ deviceId = '', profile = 'auto' } = {}) {
     canvas.capturedAt = frame.capturedAt;
     canvas.scanMoving = frame.moving;
     canvas.scanQuality = quality;
+    emitScanDiagnostic('camera-frame',{frameId:frame.frameId,capturedAt:frame.capturedAt,videoTime:video.currentTime,motionEpoch:canvas.scanMotionEpoch,
+      moving:frame.moving,region,quality:{acceptable:quality.acceptable,issue:quality.issue,score:quality.score,mean:quality.mean,sharpness:quality.sharpness}});
     const issue = frame.moving ? 'moving' : quality.issue;
     setCaptureQuality((previous) => previous?.issue === issue ? previous : { issue });
     return frame;

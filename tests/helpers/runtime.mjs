@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import vm from 'node:vm';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { transformWithEsbuild } from 'vite';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -13,7 +13,7 @@ async function compileDirectory(directory) {
     else if (/\.(js|jsx)$/.test(filename)) {
       const result = await transformWithEsbuild(await fs.readFile(filename, 'utf8'), filename, {
         format: 'cjs', jsx: 'transform',
-        define: { __BUILD_TIME__: '0', __APP_VERSION__: '"test"', __APP_RELEASE_VERSION__: '"test"', 'import.meta.env.DEV': 'false' },
+        define: { __BUILD_TIME__: '0', __APP_VERSION__: '"test"', __APP_RELEASE_VERSION__: '"test"', 'import.meta.env.DEV': 'globalThis.__TEST_DEVELOPMENT__', 'import.meta.url': JSON.stringify(pathToFileURL(filename).href) },
       });
       compiled.set(filename, result.code);
     }
@@ -23,7 +23,7 @@ await compileDirectory(path.join(root, 'src'));
 
 // Runs the real components and handlers with isolated state, timers and storage.
 // It deliberately does not start cameras, network requests or app initialization.
-export function createRuntime({ storage = {}, mocks = {}, globals = {} } = {}) {
+export function createRuntime({ storage = {}, mocks = {}, globals = {}, development = true } = {}) {
   const values = new Map(Object.entries(storage).map(([key, value]) => [key, JSON.stringify(value)]));
   let currentHooks;
   const React = {
@@ -48,8 +48,8 @@ export function createRuntime({ storage = {}, mocks = {}, globals = {} } = {}) {
     memo: (component) => component,
   };
   const context = vm.createContext({
-    console, URL, Map, Set, Float32Array, Uint32Array, Uint8ClampedArray,
-    Date, Math, crypto: globalThis.crypto,
+    console, URL, Map, Set, Float32Array, Uint32Array, Uint8ClampedArray, __TEST_DEVELOPMENT__: development,
+    Date, Math, AbortController, crypto: globalThis.crypto,
     setTimeout: () => 1, clearTimeout: () => {}, setInterval: () => 1, clearInterval: () => {},
     requestAnimationFrame: (fn) => fn(),
     navigator: {}, window: { location: { origin: 'http://localhost' } },
