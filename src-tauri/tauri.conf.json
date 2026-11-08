@@ -55,7 +55,8 @@
     "longDescription": "Riftbound Scanner is a desktop-first Riftbound TCG scanner that runs card detection, matching, and collection management locally on the user's machine.",
     "copyright": "Copyright (c) 2026 Teme1999",
     "icon": [
-      "../public/images/riftboundscanner.ico"
+      "../public/images/riftboundscanner.ico",
+      "../public/images/riftboundscanner.png"
     ],
     "targets": [
       "msi"
