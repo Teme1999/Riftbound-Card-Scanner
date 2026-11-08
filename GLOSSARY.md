@@ -66,10 +66,12 @@ _Avoid_: display name, long name
 The name text as it appears on the card itself, such as `Daughter of the Void` or `Kai'Sa`.
 _Avoid_: title (when meaning any card's name), short name
 
-**Custom card**:
-A print the user adds because the official card gallery does not list it.
-_Avoid_: missing card, user card
-
 **Card database**:
-Every print the app knows: those from the official card gallery plus custom cards.
+Every print the app knows, taken from the official card gallery.
 _Avoid_: catalog, hash DB
+
+## Exports
+
+**Deck list**:
+A plain-text export of the scanned cards as a deck, one line per card by full name and count under section headers, for pasting into deck builders. It names cards, not prints, and carries no foil.
+_Avoid_: text list, card list, decklist export
